@@ -70,6 +70,14 @@ pub const Token = struct {
     }
 };
 
+pub fn is_infix_right_associative(tt: TokenType) bool {
+    return switch (tt) {
+        .CARAT,
+        .CONCAT => true,
+        else => false
+    };
+}
+
 pub fn token_type_str(tt: TokenType) ?[]const u8 {
     return switch (tt) {
         .ILLEGAL => "<ILLEGAL>", // illegal

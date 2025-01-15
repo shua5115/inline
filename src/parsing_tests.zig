@@ -60,6 +60,9 @@ test "parse assign" {
     \\add = [a, b](^a+b);
     \\table = {1, 2, 3};
     \\a,b,c = 1,2,3;
+    \\y = -x^2; y == -x^2^1;
+    \\concat = "I have " .. 99 .. " problems"
+    \\but = "semicolons aint " .. 1 
     ;
     std.debug.print("Source:\n{s}\n", .{source});
     var context = try ParserContext.init(alloc, source);

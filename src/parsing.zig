@@ -16,12 +16,12 @@ const OpPriority = enum(u8) {
     AND,
     EQUALS,
     LESSGREATER,
+    CONCAT,
     SUM,
     PRODUCT,
     MOD,
-    POW,
-    CONCAT,
     PREFIX,
+    POW,
     CALL,
     INDEX,
 };
@@ -483,7 +483,10 @@ pub const Parser = struct {
             .op = self.cur.tokentype,
             .rhs_index = .FINAL,
         }}});
-        const precedence = op_priority(self.cur.tokentype);
+        var precedence = op_priority(self.cur.tokentype);
+        if (tokens.is_infix_right_associative(self.cur.tokentype)) {
+            precedence = @enumFromInt(@intFromEnum(precedence) - 1);
+        }
         try self.nextToken();
         const rhs_index = try self.parseExpression(precedence);
         self.getNode(node_index).?.expr.InfixExpression.rhs_index = rhs_index;
