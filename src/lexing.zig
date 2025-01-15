@@ -77,7 +77,7 @@ pub const Lexer = struct {
             '/' => tok = .{.tokentype=TokenType.SLASH, .literal=.{.static="/"}},
             '%' => tok = .{.tokentype=TokenType.MOD, .literal=.{.static="%"}},
             '^' => if(self.next == '^') {
-                    tok = .{.tokentype=TokenType.RETURN, .literal=.{.static="^^"}};
+                    tok = .{.tokentype=TokenType.BREAK, .literal=.{.static="^^"}};
                     try self.readNextChar();
                 } else {
                     tok = .{.tokentype=TokenType.CARAT, .literal=.{.static="^"}};

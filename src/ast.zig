@@ -18,6 +18,7 @@ pub const Expression = union(enum) {
     NumberLiteral: NumberLiteral,
     StringLiteral: StringLiteral,
     FunctionLiteral: FunctionLiteral,
+    TableLiteral: TableLiteral,
     PrefixExpression: PrefixExpression,
     InfixExpression: InfixExpression,
     CallExpression: CallExpression,
@@ -84,12 +85,33 @@ pub const Block = struct {
 };
 
 pub const Break = struct {
-    rhs_index: AstIndex,
+    
 };
 
 pub const Return = struct {
     rhs_index: AstIndex,
 };
+
+pub fn write_ast_list(writer: std.io.AnyWriter, nodes: []const Node, literals: []const[]const u8) anyerror!void {
+    for (nodes, 0..) |n, i| {
+        try writer.print("{d}.\t{s}", .{i, @tagName(n.expr)});
+        switch (n.expr) {
+            .Identifier => try writer.print("({s})", .{literals[n.expr.Identifier.literal_index]}),
+            .StringLiteral => try writer.print("({s})", .{literals[n.expr.StringLiteral.literal_index]}),
+            .NumberLiteral => try writer.print("({s})", .{literals[n.expr.NumberLiteral.literal_index]}),
+            .PrefixExpression => try writer.print("({s},->{d})", .{tokens.token_type_str(n.expr.PrefixExpression.op) orelse "<INVALID OP>", @intFromEnum(n.expr.PrefixExpression.rhs_index)}),
+            .InfixExpression => try writer.print("(->{d},{s},->{d})", .{@intFromEnum(n.expr.InfixExpression.lhs_index), tokens.token_type_str(n.expr.InfixExpression.op) orelse "<INVALID OP>", @intFromEnum(n.expr.InfixExpression.rhs_index)}),
+            .FunctionLiteral => try writer.print("(->{d})", .{@intFromEnum(n.expr.FunctionLiteral.body_index)}),
+            .Block => try writer.print("(->{d})", .{@intFromEnum(n.expr.Block.start_index)}),
+            .TableLiteral => try writer.print("(->{d})", .{@intFromEnum(n.expr.TableLiteral.start_index)}),
+            else => {}
+        }
+        if (n.next_index != .FINAL) {
+            try writer.print(" -> {d}", .{@intFromEnum(n.next_index)});
+        }
+        try writer.writeByte('\n');
+    }
+}
 
 pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals: *const[]const[]const u8, node_index: AstIndex) anyerror!void {
     if (node_index == .FINAL) return;
@@ -153,6 +175,17 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
             }
             try writer.writeByte(')');
         },
+        .TableLiteral => |n| {
+            try writer.writeByte('{');
+            var child_index = n.start_index;
+            while(child_index != .FINAL) {
+                try write_node(writer, nodes, literals, child_index);
+                const child_node = nodes.*[@intFromEnum(child_index)];
+                child_index = child_node.next_index;
+                if (child_index != .FINAL) _ = try writer.write(", ");
+            }
+            try writer.writeByte('}');
+        },
         .CallExpression => |n| {
             try write_node(writer, nodes, literals, n.lhs_index);
             try writer.writeByte('(');
@@ -187,15 +220,12 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
             }
             try writer.writeByte(')');
         },
-        .Break => |n| {
-            try writer.writeByte('^');
-            try write_node(writer, nodes, literals, n.rhs_index);
-            if (cur_node.next_index != .FINAL) _ = try writer.write("; ");
+        .Break => {
+            _ = try writer.write("^^");
         },
         .Return => |n| {
-            _ = try writer.write("^^");
+            try writer.writeByte('^');
             try write_node(writer, nodes, literals, n.rhs_index);
-            if (cur_node.next_index != .FINAL) _ = try writer.write("; ");
         },
     }
 }

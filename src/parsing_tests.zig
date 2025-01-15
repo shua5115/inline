@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const tokens = @import("tokens.zig");
 const lexing = @import("lexing.zig");
 const parsing = @import("parsing.zig");
 const stringreader = @import("stringreader.zig");
@@ -56,7 +57,9 @@ test "parse assign" {
     
     const source: []const u8 = 
     \\inline = "Hello, world!";
-    \\add = [a, b](^(a+b));
+    \\add = [a, b](^a+b);
+    \\table = {1, 2, 3};
+    \\a,b,c = 1,2,3;
     ;
     std.debug.print("Source:\n{s}\n", .{source});
     var context = try ParserContext.init(alloc, source);
@@ -66,12 +69,10 @@ test "parse assign" {
     
     const root = try parser.parseProgram();
     
-    std.debug.print("Parsed:\n", .{});
+    std.debug.print("\nParsed:\n", .{});
     try ast.write_node(std.io.getStdErr().writer().any(), &context.nodes.items, &context.literals.items, root);
     std.debug.print("\n", .{});
 
-    std.debug.print("AST as list:\n", .{});
-    for (context.nodes.items) |n| {
-        std.debug.print("{s}, ", .{@tagName(n.expr)});
-    }
+    std.debug.print("\nAST as list:\n", .{});
+    try ast.write_ast_list(std.io.getStdErr().writer().any(), context.nodes.items, context.literals.items);
 }

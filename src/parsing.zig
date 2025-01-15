@@ -10,8 +10,8 @@ const Lexer = lexing.Lexer;
 
 const OpPriority = enum(u8) {
     LOWEST = 0,
-    COMMA,
     ASSIGN,
+    COMMA,
     OR,
     AND,
     EQUALS,
@@ -28,8 +28,8 @@ const OpPriority = enum(u8) {
 
 fn op_priority(tt: TokenType) OpPriority {
     return switch(tt) {
-        .COMMA => OpPriority.COMMA,
         .ASSIGN => OpPriority.ASSIGN,
+        .COMMA => OpPriority.COMMA,
         .OR => OpPriority.OR,
         .AND => OpPriority.AND,
         .EQ => OpPriority.EQUALS,
@@ -62,6 +62,7 @@ pub const ParseError = error {
     INVALID_PREFIX,
     INVALID_INFIX,
     MALFORMED_NUMBER,
+    MALFORMED_TABLE_LITERAL,
     INVALID_ARGLIST,
     MISSING_FN_BODY,
 };
@@ -154,25 +155,29 @@ pub const Parser = struct {
     // For example:
     // Block Statement => (); => cur one past ';' on end
     // Not Expression => !a => cur one past 'a' on end
+    // Parser functions push the current node before the node's children.
 
     // Chains of statements:
-    // Each ast node represents an expression.
-    // The distinction between statements and expressions only exists during parsing.
+    // Each ast node represents an expression, but can be a statement depending on context.
+    // Blocks and function bodies both expect to contain a chain of statements.
     // Each ast node contains a field "next_index", which allows nodes to form singly linked lists.
     // "next_index" is an unbounded enum, which has a FINAL value as a sentinel
-    // When a node contains points to a chain of statements, it only stores the "head" of the chain's linked list.
+    // When a node contains a chain of statements, it only stores the "head" of the chain's linked list.
     // The parser for the node which contains the list is responsible for ensuring proper linkage.
 
     /// Parses until the input reaches EOF, returning the root index of the AST.
     pub fn parseProgram(self: *Self) !ast.AstIndex {
-        var node = ast.Node{.expr = .{.Block = .{.start_index = .FINAL}}};
+        const node_index = try self.pushNode(ast.Node{.expr = .{
+            .Block = .{.start_index = .FINAL}
+        }});
         
         if (self.cur.tokentype == .EOF) {
-            return self.pushNode(node);
+            return node_index;
         }
 
+        
         var cur_index = try expect(self.parseStatement());
-        node.expr.Block.start_index = cur_index;
+        self.getNode(node_index).?.expr.Block.start_index = cur_index;
 
         while (self.cur.tokentype != .EOF) {
             const next_index = try expect(self.parseStatement());
@@ -181,54 +186,12 @@ pub const Parser = struct {
             cur_index = next_index;
         }
         
-        return self.pushNode(node);
+        return node_index;
     }
 
     // STATEMENT PARSERS
 
     fn parseStatement(self: *Self) !ast.AstIndex {
-        return try switch (self.cur.tokentype) {
-            TokenType.CARAT => self.parseBreakStatement(),
-            TokenType.RETURN => self.parseReturnStatement(),
-            else => self.parseExpressionStatement()
-        };
-    }
-
-    fn parseBreakStatement(self: *Self) !ast.AstIndex {
-        std.debug.assert(self.cur.tokentype == .CARAT);
-        try self.nextToken();
-
-        const node = ast.Node{.expr = .{ .Break = .{
-            .rhs_index = switch(self.next.tokentype) {
-                TokenType.RPAREN, TokenType.SEMICOLON, TokenType.EOF => ast.AstIndex.FINAL,
-                else => try self.parseExpression(OpPriority.LOWEST)
-            }
-        }}};
-
-        if (self.cur.tokentype == .SEMICOLON) {
-            try self.nextToken();
-        }
-        return try self.pushNode(node);
-    }
-
-    fn parseReturnStatement(self: *Self) !ast.AstIndex {
-        std.debug.assert(self.cur.tokentype == .RETURN);
-        try self.nextToken();
-
-        const node = ast.Node{.expr = .{ .Return = .{
-            .rhs_index = switch(self.next.tokentype) {
-                TokenType.RPAREN, TokenType.SEMICOLON, TokenType.EOF => ast.AstIndex.FINAL,
-                else => try self.parseExpression(OpPriority.LOWEST)
-            }
-        }}};
-
-        if (self.cur.tokentype == .SEMICOLON) {
-            try self.nextToken();
-        }
-        return try self.pushNode(node);
-    }
-
-    fn parseExpressionStatement(self: *Self) !ast.AstIndex {
         const node = try self.parseExpression(OpPriority.LOWEST);
         if (self.cur.tokentype == .SEMICOLON) {
             try self.nextToken();
@@ -240,6 +203,8 @@ pub const Parser = struct {
 
     fn prefixParseFn(tt: TokenType) ?*const fn(*Self)anyerror!ast.AstIndex {
         return switch(tt) {
+            TokenType.CARAT => parseReturn,
+            TokenType.BREAK => parseBreak,
             TokenType.IDENT => parseIdentifier,
             TokenType.NUMBER => parseNumberLiteral,
             TokenType.DOT => parseNumberLiteral,
@@ -258,8 +223,30 @@ pub const Parser = struct {
         };
     }
 
+    fn parseBreak(self: *Self) !ast.AstIndex {
+        std.debug.assert(self.cur.tokentype == .BREAK);
+        try self.nextToken();
+        return try self.pushNode(ast.Node{.expr = .{ .Break = .{}}});
+    }
+
+    fn parseReturn(self: *Self) !ast.AstIndex {
+        std.debug.assert(self.cur.tokentype == .CARAT);
+        try self.nextToken();
+        const node_index = try self.pushNode(ast.Node{.expr = .{ .Return = .{
+            .rhs_index = .FINAL
+        }}});
+        
+        const rhs_index = switch(self.next.tokentype) {
+            TokenType.RPAREN, TokenType.SEMICOLON, TokenType.EOF => ast.AstIndex.FINAL,
+            else => try self.parseExpression(OpPriority.LOWEST)
+        };
+        self.getNode(node_index).?.expr.Return.rhs_index = rhs_index;
+        return node_index;
+    }
+
     fn infixParseFn(tt: TokenType) ?*const fn(*Self, ast.AstIndex)anyerror!ast.AstIndex {
         return switch (tt) {
+            TokenType.COMMA,
             TokenType.ASSIGN,
             TokenType.OR,
             TokenType.AND,
@@ -283,12 +270,17 @@ pub const Parser = struct {
     }
 
     fn parseExpression(self: *Self, precedence: OpPriority) !ast.AstIndex {
+        const prefix = self.cur.tokentype;
         const prefixParser = prefixParseFn(self.cur.tokentype) orelse {
-            std.debug.print("INVALID PREFIX: {s}\n", .{@tagName(self.cur.tokentype)});
             return ParseError.INVALID_PREFIX;
         };
         var left: ast.AstIndex = try expect(prefixParser(self));
-
+        // These prefix expressions will never be the left argument to an infix expression.
+        switch(prefix) {
+            .CARAT => return left,
+            .BREAK => return left,
+            else => {}
+        }
         while (self.cur.tokentype != TokenType.SEMICOLON and @intFromEnum(precedence) < @intFromEnum(op_priority(self.cur.tokentype))) {
             const infixParser = infixParseFn(self.cur.tokentype) orelse return left;
             // leftmost expression becomes one with the highest precedence
@@ -328,34 +320,39 @@ pub const Parser = struct {
     fn parsePrefixExpression(self: *Self) !ast.AstIndex {
         const kind = self.cur.tokentype;
         try self.nextToken();
-        const node = ast.Node{.expr=.{.PrefixExpression = .{
+        const node_index = try self.pushNode(ast.Node{.expr=.{.PrefixExpression = .{
             .op = kind,
-            .rhs_index = try self.parseExpression(.PREFIX),
-        }}};
-        return self.pushNode(node);
+            .rhs_index = .FINAL,
+        }}});
+        const rhs_index = try self.parseExpression(.PREFIX);
+        self.getNode(node_index).?.expr.PrefixExpression.rhs_index = rhs_index;
+        return node_index;
     }
 
     fn parseGlobal(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .AT);
         try self.nextToken();
-        return self.pushNode(ast.Node{.expr = .{
-            .Global = .{.rhs_index = try self.parseExpression(.LOWEST)}
+        const node_index = try self.pushNode(ast.Node{.expr = .{
+            .Global = .{.rhs_index = .FINAL }
         }});
+        const rhs_index = try self.parseExpression(.LOWEST);
+        self.getNode(node_index).?.expr.Global.rhs_index = rhs_index;
+        return node_index;
     }
 
     fn parseBlock(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .LPAREN);
-        var node = ast.Node{.expr = .{ .Block = .{
+        const node_index = try self.pushNode(ast.Node{.expr = .{ .Block = .{
             .start_index = .FINAL
-        }}};
+        }}});
         try self.nextToken();
         if (self.cur.tokentype == .RPAREN) {
             try self.nextToken();
-            return self.pushNode(node);
+            return node_index;
         }
 
         var cur_index = try self.parseStatement();
-        node.expr.Block.start_index = cur_index;
+        self.getNode(node_index).?.expr.Block.start_index = cur_index;
 
         while (self.cur.tokentype != .RPAREN and self.cur.tokentype != .EOF) {
             const next_index = try self.parseStatement();
@@ -366,20 +363,20 @@ pub const Parser = struct {
         }
         try self.nextToken();
         
-        return self.pushNode(node);
+        return node_index;
     }
 
     fn parseFunctionLiteral(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .LBRACKET);
-        var node = ast.Node{.expr = .{ .FunctionLiteral = .{
+        const node_index = try self.pushNode(ast.Node{.expr = .{ .FunctionLiteral = .{
             .params_index = .FINAL,
             .body_index = .FINAL,
-        }}};
+        }}});
 
         try self.nextToken();
         // Parse Args
         {
-            var prev_node: ?*ast.Node = null;
+            var prev_index = ast.AstIndex.FINAL;
             while (self.cur.tokentype != .RBRACKET and self.cur.tokentype != .EOF) {
                 const ident_node: ast.Node = switch(self.cur.tokentype) {
                     .IDENT => ast.Node{.expr = .{ .Identifier = .{
@@ -390,11 +387,15 @@ pub const Parser = struct {
                 };
                 const is_ellipsis = (ident_node.expr == .Ellipsis);
                 const cur_index = try self.pushNode(ident_node);
-                if(node.expr.FunctionLiteral.params_index == .FINAL) node.expr.FunctionLiteral.params_index = cur_index;
-                if (prev_node) |n| {
-                    n.next_index = cur_index;
+                
+                if (prev_index == .FINAL) {
+                    // then this is the first, so set the param list head here
+                    self.getNode(node_index).?.expr.FunctionLiteral.params_index = cur_index;
+                } else {
+                    // link the previous node to here
+                    self.getNode(prev_index).?.next_index = cur_index;
                 }
-                prev_node = self.getNode(cur_index).?;
+                prev_index = cur_index;
                 try self.nextToken();
                 switch (self.cur.tokentype) {
                     .COMMA => if (is_ellipsis) { return ParseError.INVALID_ARGLIST; } else { try self.nextToken(); },
@@ -411,12 +412,12 @@ pub const Parser = struct {
         if (self.cur.tokentype == .RPAREN) {
             // empty function body
             try self.nextToken();
-            return self.pushNode(node);
+            return node_index;
         }
 
         // Read function body
         var cur_index = try self.parseStatement();
-        node.expr.FunctionLiteral.body_index = cur_index;
+        self.getNode(node_index).?.expr.FunctionLiteral.body_index = cur_index;
 
         while (self.cur.tokentype != .RPAREN and self.cur.tokentype != .EOF) {
             const next_index = try self.parseStatement();
@@ -428,7 +429,7 @@ pub const Parser = struct {
         // go one past ')'
         try self.nextToken();
 
-        return self.pushNode(node);
+        return node_index;
     }
 
     fn parseStringLiteral(self: *Self) !ast.AstIndex {
@@ -441,39 +442,69 @@ pub const Parser = struct {
     }
 
     fn parseTableLiteral(self: *Self) !ast.AstIndex {
-        _ = self;
-        unreachable;
+        std.debug.assert(self.cur.tokentype == .LBRACE);
+        const node_index = try self.pushNode(ast.Node{.expr = .{ .TableLiteral = .{
+            .start_index = .FINAL
+        }}});
+
+        try self.nextToken();
+        // check for empty table
+        if (self.cur.tokentype == .RBRACE) {
+            try self.nextToken();
+            return node_index;
+        }
+        
+        var prev_index = ast.AstIndex.FINAL;
+        while (self.cur.tokentype != .RBRACE and self.cur.tokentype != .EOF) {
+            const cur_index = try self.parseExpression(.COMMA);
+            if (prev_index == .FINAL) {
+                self.getNode(node_index).?.expr.TableLiteral.start_index = cur_index;
+            } else {
+                self.getNode(prev_index).?.next_index = cur_index;
+            }
+            prev_index = cur_index;
+            
+            switch (self.cur.tokentype) {
+                .COMMA => try self.nextToken(),
+                .RBRACE => {},
+                else => return ParseError.MALFORMED_TABLE_LITERAL
+            }
+        }
+        // pass '}'
+        try self.nextToken();
+        return node_index;
     }
 
     // INFIX EXPRESSIONS
 
     fn parseInfixExpression(self: *Self, left: ast.AstIndex) !ast.AstIndex {
-        var node = ast.Node{.expr = .{ .InfixExpression = .{
+        const node_index = try self.pushNode(ast.Node{.expr = .{ .InfixExpression = .{
             .lhs_index = left,
             .op = self.cur.tokentype,
-            .rhs_index = undefined,
-        }}};
+            .rhs_index = .FINAL,
+        }}});
         const precedence = op_priority(self.cur.tokentype);
         try self.nextToken();
-        node.expr.InfixExpression.rhs_index = try self.parseExpression(precedence);
+        const rhs_index = try self.parseExpression(precedence);
+        self.getNode(node_index).?.expr.InfixExpression.rhs_index = rhs_index;
 
-        return self.pushNode(node);
+        return node_index;
     }
 
     fn parseCallExpression(self: *Self, left: ast.AstIndex) !ast.AstIndex {
-        var node = ast.Node{.expr = .{ .CallExpression = .{
+        const node_index = try self.pushNode(ast.Node{.expr = .{ .CallExpression = .{
             .lhs_index = left,
             .args_index = .FINAL,
-        }}};
+        }}});
         
         try self.nextToken();
         if (self.cur.tokentype == .RPAREN) {
             try self.nextToken();
-            return self.pushNode(node);
+            return node_index;
         }
 
         var cur_index = try self.parseExpression(.LOWEST);
-        node.expr.CallExpression.args_index = cur_index;
+        self.getNode(node_index).?.expr.CallExpression.args_index = cur_index;
 
         while (self.cur.tokentype != .RPAREN and self.cur.tokentype != .EOF) {
             if (self.cur.tokentype != .COMMA) return ParseError.INVALID_ARGLIST;
@@ -486,6 +517,6 @@ pub const Parser = struct {
         }
         try self.nextToken();
         
-        return self.pushNode(node);
+        return node_index;
     }
 };

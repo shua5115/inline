@@ -21,7 +21,7 @@ pub const TokenType = enum {
     SLASH, // /
     MOD, // %
     CARAT, // ^
-    RETURN, // ^^
+    BREAK, // ^^
     EQ, // ==
     NEQ, // !=
     LT, // <
@@ -84,7 +84,7 @@ pub fn token_type_str(tt: TokenType) ?[]const u8 {
         .SLASH => "/", // /
         .MOD => "%", // %
         .CARAT => "^", // ^
-        .RETURN => "^^", // ^^
+        .BREAK => "^^", // ^^
         .EQ => "==", // ==
         .NEQ => "!=", // !=
         .LT => "<", // <
