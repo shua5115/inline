@@ -86,7 +86,7 @@ pub const Parser = struct {
         literals: *std.ArrayList([]const u8),
         nodes: *std.ArrayList(ast.Node)
     ) !Parser {
-        const invalid_token = Token{.tokentype=TokenType.ILLEGAL, .literal=.{.static=""}};
+        const invalid_token = Token{.tokentype=TokenType.ILLEGAL};
         var p = Parser{
             .allocator = alloc,
             .lex = lex,
@@ -205,6 +205,8 @@ pub const Parser = struct {
         return switch(tt) {
             TokenType.CARAT => parseReturn,
             TokenType.BREAK => parseBreak,
+            TokenType.NIL => parseNil,
+            TokenType.ELLIPSIS => parseEllipsis,
             TokenType.IDENT => parseIdentifier,
             TokenType.NUMBER => parseNumberLiteral,
             TokenType.DOT => parseNumberLiteral,
@@ -272,6 +274,7 @@ pub const Parser = struct {
     fn parseExpression(self: *Self, precedence: OpPriority) !ast.AstIndex {
         const prefix = self.cur.tokentype;
         const prefixParser = prefixParseFn(self.cur.tokentype) orelse {
+            std.debug.print("INVALID PREFIX: {s}\n", .{@tagName(self.cur.tokentype)});
             return ParseError.INVALID_PREFIX;
         };
         var left: ast.AstIndex = try expect(prefixParser(self));
@@ -292,9 +295,19 @@ pub const Parser = struct {
 
     // PREFIX EXPRESSIONS
 
+    fn parseNil(self: *Self) !ast.AstIndex {
+        std.debug.assert(self.cur.tokentype == .NIL);
+        return self.pushNode(ast.Node{.expr = .{ .Nil = .{} }});
+    }
+
+    fn parseEllipsis(self: *Self) !ast.AstIndex {
+        std.debug.assert(self.cur.tokentype == .ELLIPSIS);
+        return self.pushNode(ast.Node{.expr = .{ .Ellipsis = .{} }});
+    }
+
     fn parseIdentifier(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .IDENT);
-        const lit_index = self.cur.literal.index;
+        const lit_index = self.cur.literal_index;
         try self.nextToken();
         return self.pushNode(ast.Node{.expr = .{ .Identifier = 
             .{ .literal_index=lit_index }
@@ -303,7 +316,7 @@ pub const Parser = struct {
 
     fn parseNumberLiteral(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .NUMBER);
-        const literal_index = self.cur.literal.index;
+        const literal_index = self.cur.literal_index;
         const buf = self.literals.items[literal_index];
         const val = std.fmt.parseFloat(f64, buf) catch blk: {
             break :blk @as(f64, @floatFromInt(std.fmt.parseInt(i64, buf, 0) catch {
@@ -380,7 +393,7 @@ pub const Parser = struct {
             while (self.cur.tokentype != .RBRACKET and self.cur.tokentype != .EOF) {
                 const ident_node: ast.Node = switch(self.cur.tokentype) {
                     .IDENT => ast.Node{.expr = .{ .Identifier = .{
-                        .literal_index = self.cur.literal.index
+                        .literal_index = self.cur.literal_index
                     }}},
                     .ELLIPSIS => ast.Node{.expr = .{ .Ellipsis = .{} }},
                     else => return ParseError.INVALID_ARGLIST
@@ -434,7 +447,7 @@ pub const Parser = struct {
 
     fn parseStringLiteral(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .STRING);
-        const lit_index = self.cur.literal.index;
+        const lit_index = self.cur.literal_index;
         try self.nextToken();
         return self.pushNode(ast.Node{.expr = .{
             .StringLiteral = .{.literal_index = lit_index}

@@ -99,8 +99,8 @@ pub fn write_ast_list(writer: std.io.AnyWriter, nodes: []const Node, literals: [
             .Identifier => try writer.print("({s})", .{literals[n.expr.Identifier.literal_index]}),
             .StringLiteral => try writer.print("({s})", .{literals[n.expr.StringLiteral.literal_index]}),
             .NumberLiteral => try writer.print("({s})", .{literals[n.expr.NumberLiteral.literal_index]}),
-            .PrefixExpression => try writer.print("({s} ->{d})", .{tokens.token_type_str(n.expr.PrefixExpression.op) orelse "<INVALID OP>", @intFromEnum(n.expr.PrefixExpression.rhs_index)}),
-            .InfixExpression => try writer.print("(->{d} {s} ->{d})", .{@intFromEnum(n.expr.InfixExpression.lhs_index), tokens.token_type_str(n.expr.InfixExpression.op) orelse "<INVALID OP>", @intFromEnum(n.expr.InfixExpression.rhs_index)}),
+            .PrefixExpression => try writer.print("({s} ->{d})", .{tokens.token_type_str(n.expr.PrefixExpression.op), @intFromEnum(n.expr.PrefixExpression.rhs_index)}),
+            .InfixExpression => try writer.print("(->{d} {s} ->{d})", .{@intFromEnum(n.expr.InfixExpression.lhs_index), tokens.token_type_str(n.expr.InfixExpression.op), @intFromEnum(n.expr.InfixExpression.rhs_index)}),
             .FunctionLiteral => try writer.print("(->{d})", .{@intFromEnum(n.expr.FunctionLiteral.body_index)}),
             .Block => try writer.print("(->{d})", .{@intFromEnum(n.expr.Block.start_index)}),
             .TableLiteral => try writer.print("(->{d})", .{@intFromEnum(n.expr.TableLiteral.start_index)}),
@@ -199,15 +199,17 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
             try writer.writeByte(')');
         },
         .PrefixExpression => |n| {
-            _ = try writer.write(tokens.token_type_str(n.op) orelse "<ILLEGAL PREFIX>");
+            _ = try writer.write(tokens.token_type_str(n.op));
             try write_node(writer, nodes, literals, n.rhs_index);
         },
         .InfixExpression => |n| {
+            try writer.writeByte('(');
             try write_node(writer, nodes, literals, n.lhs_index);
             try writer.writeByte(' ');
-            _ = try writer.write(tokens.token_type_str(n.op) orelse "<ILLEGAL INFIX>");
+            _ = try writer.write(tokens.token_type_str(n.op));
             try writer.writeByte(' ');
             try write_node(writer, nodes, literals, n.rhs_index);
+            try writer.writeByte(')');
         },
         .Block => |n| {
             try writer.writeByte('(');

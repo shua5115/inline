@@ -19,6 +19,7 @@ pub fn isDigit(c: u8) bool {
 pub const LexerError = error{
     INVALID_CHAR,
     SYNTAX_ERROR,
+    INCOMPLETE_STRING_LITERAL,
 };
 
 pub const Lexer = struct {
@@ -29,8 +30,8 @@ pub const Lexer = struct {
     /// All stored slices must be free'd using the Lexer's allocator, not the ArrayList's.
     literals: *std.ArrayList([]const u8),
     input: std.io.AnyReader,
-    cur: u8,
-    next: u8,
+    cur: ?u8,
+    next: ?u8,
 
     pub fn init(allocator: std.mem.Allocator, literals: *std.ArrayList([]const u8), reader: std.io.AnyReader) Lexer {
         var lexer = Lexer{
@@ -41,120 +42,171 @@ pub const Lexer = struct {
             .next = undefined,
         };
 
-        lexer.cur = (reader.readByte() catch 0);
-        lexer.next = (reader.readByte() catch 0);
+        lexer.cur = (reader.readByte() catch null);
+        lexer.next = (reader.readByte() catch null);
 
         return lexer;
     }
 
     /// Reads one character from input.
     /// Stores next into cur, and read input into next.
-    pub fn readNextChar(self: *Self) anyerror!void {
+    fn readNextChar(self: *Self) void {
         self.cur = self.next;
-        // if (self.next == 0) return;
-        // var buf: [1]u8 = .{0};
-        // const nread = self.input.read(buf[0..1]) catch 0;
-        // self.next = if (nread == 0) 0 else buf[0];
-        self.next = self.input.readByte() catch 0;
+        // if (self.next == null) return;
+        self.next = self.input.readByte() catch null;
     }
 
     pub fn nextToken(self: *Self) anyerror!Token {
-        var tok: Token = Token{.tokentype = TokenType.ILLEGAL, .literal = .{.static=""}};
-
-        try self.skipWhitespace();
-        const c = self.cur;
+        var tok: Token = Token{.tokentype = TokenType.ILLEGAL};
+        const eof = Token{.tokentype = .EOF};
+        self.skipWhitespace();
+        while (self.cur == '-' and self.next == '-') {
+            std.debug.print("COMMENT STARTED!\n", .{});
+            self.readNextChar();
+            self.readNextChar();
+            self.skipComment();
+            self.skipWhitespace();
+        }
+        const c = self.cur orelse return eof;
         switch (c) {
-            '~' => tok = .{.tokentype=TokenType.NIL, .literal=.{.static="~"}},
+            '~' => tok = .{.tokentype=TokenType.NIL},
             '=' => if (self.next == '=') {
-                tok = .{.tokentype=TokenType.EQ, .literal=.{.static="=="}};
-                try self.readNextChar();
+                tok = .{.tokentype=TokenType.EQ};
+                self.readNextChar();
             } else {
-                tok = .{.tokentype=TokenType.ASSIGN, .literal=.{.static="="}};
+                tok = .{.tokentype=TokenType.ASSIGN};
             },
-            '+' => tok = .{.tokentype=TokenType.PLUS, .literal=.{.static="+"}},
-            '-' => tok = .{.tokentype=TokenType.MINUS, .literal=.{.static="-"}},
-            '*' => tok = .{.tokentype=TokenType.ASTERISK, .literal=.{.static="*"}},
-            '/' => tok = .{.tokentype=TokenType.SLASH, .literal=.{.static="/"}},
-            '%' => tok = .{.tokentype=TokenType.MOD, .literal=.{.static="%"}},
-            '^' => if(self.next == '^') {
-                    tok = .{.tokentype=TokenType.BREAK, .literal=.{.static="^^"}};
-                    try self.readNextChar();
+            '+' => tok = .{.tokentype=TokenType.PLUS},
+            '-' => if(self.next == '-') {
+                    // all comments should be handled
+                    unreachable;
                 } else {
-                    tok = .{.tokentype=TokenType.CARAT, .literal=.{.static="^"}};
+                    tok = .{.tokentype=TokenType.MINUS};
+                },
+            '*' => tok = .{.tokentype=TokenType.ASTERISK},
+            '/' => tok = .{.tokentype=TokenType.SLASH},
+            '%' => tok = .{.tokentype=TokenType.MOD},
+            '^' => if(self.next == '^') {
+                    tok = .{.tokentype=TokenType.BREAK};
+                    self.readNextChar();
+                } else {
+                    tok = .{.tokentype=TokenType.CARAT};
                 },
             '<' => if (self.next == '=') {
-                    tok = .{.tokentype=TokenType.LE, .literal=.{.static="<="}};
-                    try self.readNextChar();
+                    tok = .{.tokentype=TokenType.LE};
+                    self.readNextChar();
                 } else {
-                    tok = .{.tokentype=TokenType.LT, .literal=.{.static="<"}};
+                    tok = .{.tokentype=TokenType.LT};
                 },
             '>' => if (self.next == '=') {
-                    tok = .{.tokentype=TokenType.GE, .literal=.{.static=">="}};
-                    try self.readNextChar();
+                    tok = .{.tokentype=TokenType.GE};
+                    self.readNextChar();
                 } else {
-                    tok = .{.tokentype=TokenType.GT, .literal=.{.static=">"}};
+                    tok = .{.tokentype=TokenType.GT};
                 },
-            '&' => tok = .{.tokentype = TokenType.AND, .literal = .{.static = "&"}},
-            '|' => tok = .{.tokentype = TokenType.OR, .literal = .{.static = "|"}},
+            '&' => tok = .{.tokentype = TokenType.AND},
+            '|' => tok = .{.tokentype = TokenType.OR},
             '!' => if (self.next == '=') {
-                    tok = .{.tokentype = TokenType.NEQ, .literal = .{.static = "!="}};
-                    try self.readNextChar();
+                    tok = .{.tokentype = TokenType.NEQ};
+                    self.readNextChar();
                 } else {
-                    tok = .{.tokentype = TokenType.NOT, .literal = .{.static = "!"}};
+                    tok = .{.tokentype = TokenType.NOT};
                 },
-            '?' => tok = .{.tokentype=TokenType.QUESTION, .literal=.{.static="?"}},
-            '#' => tok = .{.tokentype=TokenType.HASH, .literal=.{.static="#"}},
-            '@' => tok = .{.tokentype=TokenType.AT, .literal=.{.static="@"}},
-            // Note to self: numeric literals beginnning with '.' must be corrected in the ast.
+            '?' => tok = .{.tokentype=TokenType.QUESTION},
+            '#' => tok = .{.tokentype=TokenType.HASH},
+            '@' => tok = .{.tokentype=TokenType.AT},
             '.' => if (self.next == '.') {
-                    try self.readNextChar();
+                    self.readNextChar();
                     if (self.next == '.') {
-                        try self.readNextChar();
-                        tok = .{.tokentype = TokenType.ELLIPSIS, .literal = .{.static = "..."}};
+                        self.readNextChar();
+                        tok = .{.tokentype = TokenType.ELLIPSIS};
                     } else {
-                        tok = .{.tokentype = TokenType.CONCAT, .literal = .{.static=".."}};
+                        tok = .{.tokentype = TokenType.CONCAT};
                     }
-                } else if (isDigit(self.next)) {
-                    return .{.tokentype=TokenType.NUMBER, .literal=.{.index=try readNumber(self)}};
+                } else if (self.next != null and isDigit(self.next.?)) {
+                    return .{.tokentype=TokenType.NUMBER, .literal_index = @truncate(try readNumber(self))};
                 } else {
-                    tok = .{.tokentype = TokenType.DOT, .literal = .{.static = "."}};
+                    tok = .{.tokentype = TokenType.DOT};
                 },
             ':' => if (self.next == ':') {
-                    tok = .{.tokentype=TokenType.META, .literal=.{.static="::"}};
-                    try self.readNextChar();
+                    tok = .{.tokentype=TokenType.META};
+                    self.readNextChar();
                 } else {
-                    tok = .{.tokentype=TokenType.COLON, .literal=.{.static=":"}};
+                    tok = .{.tokentype=TokenType.COLON};
                 },
-            ';' => tok = .{.tokentype=TokenType.SEMICOLON, .literal=.{.static=";"}},
-            ',' => tok = .{.tokentype=TokenType.COMMA, .literal=.{.static=";"}},
-            '(' => tok = .{.tokentype=TokenType.LPAREN, .literal=.{.static="("}},
-            ')' => tok = .{.tokentype=TokenType.RPAREN, .literal=.{.static=")"}},
-            '{' => tok = .{.tokentype=TokenType.LBRACE, .literal=.{.static="{"}},
-            '}' => tok = .{.tokentype=TokenType.RBRACE, .literal=.{.static="}"}},
-            '[' => tok = .{.tokentype=TokenType.LBRACKET, .literal=.{.static="["}},
-            ']' => tok = .{.tokentype=TokenType.RBRACKET, .literal=.{.static="]"}},
-            '"' => return .{.tokentype=TokenType.STRING, .literal=.{.index =try readStringLiteral(self)}},
-            '\'' => return .{.tokentype=TokenType.STRING, .literal=.{.index=try readStringLiteral(self)}},
-            0 => tok = .{.tokentype=TokenType.EOF, .literal=.{.static=""}},
-            else => if (c == '_' or std.ascii.isAlphabetic(c)) {
-                return .{.tokentype=TokenType.IDENT, .literal=.{.index=try readIdentifier(self)}};
+            ';' => tok = .{.tokentype=TokenType.SEMICOLON},
+            ',' => tok = .{.tokentype=TokenType.COMMA},
+            '(' => tok = .{.tokentype=TokenType.LPAREN},
+            ')' => tok = .{.tokentype=TokenType.RPAREN},
+            '{' => tok = .{.tokentype=TokenType.LBRACE},
+            '}' => tok = .{.tokentype=TokenType.RBRACE},
+            '[' => tok = .{.tokentype=TokenType.LBRACKET},
+            ']' => tok = .{.tokentype=TokenType.RBRACKET},
+            '"' => return .{.tokentype=TokenType.STRING, .literal_index=@truncate(try readStringLiteral(self))},
+            '\'' => return .{.tokentype=TokenType.STRING, .literal_index=@truncate(try readStringLiteral(self))},
+            else => if (!isDigit(c) and isIdentChar(c)) {
+                return .{.tokentype=TokenType.IDENT, .literal_index=@truncate(try readIdentifier(self))};
             } else if (isDigit(c)) {
                 // does not end on last character, so return early
-                return .{.tokentype=TokenType.NUMBER, .literal=.{.index=try readNumber(self)}};
+                return .{.tokentype=TokenType.NUMBER, .literal_index=@truncate(try readNumber(self))};
             }
         }
-        try self.readNextChar();
+        self.readNextChar();
 
         return tok;
     }
 
-    pub fn skipWhitespace(self: *Self) !void {
-        while (self.cur != 0 and std.ascii.isWhitespace(self.cur)) {
-            try self.readNextChar();
+    pub fn skipWhitespace(self: *Self) void {
+        while (std.ascii.isWhitespace(self.cur orelse return)) {
+            self.readNextChar();
+        }
+    }
+
+    pub fn skipComment(self: *Self) void {
+        defer std.debug.print("COMMEND ENDED!\n", .{});
+        var level: usize = 0;
+        var block_comment = false;
+        if ((self.cur orelse return) == '[') {
+            self.readNextChar();
+            while ((self.cur orelse return) == '=') {
+                level += 1;
+                self.readNextChar();
+            }
+            if ((self.cur orelse return) == '[') {
+                block_comment = true;
+                self.readNextChar();
+            }
+        }
+        std.debug.print("Is block comment? {d}, level={d}\n", .{@intFromBool(block_comment), level});
+        
+        while (true) {
+            const c = self.cur orelse return;
+            std.debug.print("comment parsing: {c}\n", .{c});
+            if (block_comment and c == ']') {
+                std.debug.print("block commend end started!\n", .{});
+                self.readNextChar();
+                var endlevel: usize = 0;
+                while((self.cur orelse return) == '=') {
+                    endlevel += 1;
+                    self.readNextChar();
+                }
+                std.debug.print("block commend levels: {d} vs. {d}\n", .{level, endlevel});
+                if ((self.cur orelse return) == ']' and endlevel == level) {
+                    self.readNextChar();
+                    return;
+                }
+                std.debug.print("incomplete block comment end!\n", .{});
+            } else if (!block_comment and c == '\n') {
+                self.readNextChar();
+                return;
+            } else {
+                self.readNextChar();
+            }
         }
     }
 
     pub fn registerLiteral(self: *Self, string: []const u8) std.mem.Allocator.Error!usize {
+        // TODO optimize repeated literals to use the same index to avoid allocation
         try self.literals.append(string);
         return self.literals.items.len-1;
     }
@@ -168,11 +220,11 @@ pub const Lexer = struct {
         std.debug.assert(start == '"' or start == '\'');
 
         while (true) {
-            try self.readNextChar();
-            const c = self.cur;
+            self.readNextChar();
+            const c = self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL;
             if (c == '\\') {
-                try self.readNextChar();
-                const c2 = switch (self.cur) {
+                self.readNextChar();
+                const c2 = switch (self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL) {
                     'a' => 0x07,
                     'b' => 0x08,
                     'e' => 0x1B,
@@ -185,11 +237,12 @@ pub const Lexer = struct {
                     '\'' => '\'',
                     '"' => '"',
                     '?' => 0x3F,
-                    else => self.cur
+                    '0' => 0,
+                    else => self.cur.?
                 };
                 try buf.append(c2);
-            } else if (c == 0 or c == start) {
-                try self.readNextChar();
+            } else if (c == start) {
+                self.readNextChar();
                 break;
             } else {
                 try buf.append(c);
@@ -202,9 +255,9 @@ pub const Lexer = struct {
     pub fn readIdentifier(self: *Self) !usize {
         var buf = std.ArrayList(u8).init(self.allocator);
         defer buf.deinit();
-        while (isIdentChar(self.cur)) {
-            try buf.append(self.cur);
-            try self.readNextChar();
+        while (self.cur != null and isIdentChar(self.cur.?)) {
+            try buf.append(self.cur.?);
+            self.readNextChar();
         }
 
         const s: []const u8 = try buf.toOwnedSlice();
@@ -215,24 +268,24 @@ pub const Lexer = struct {
         var buf = std.ArrayList(u8).init(self.allocator);
         defer buf.deinit();
         // First decimal part
-        while (isDigit(self.cur) or self.cur == '.') {
-            try buf.append(self.cur);
-            try self.readNextChar();
+        while (self.cur != null and (self.cur == '.' or isDigit(self.cur.?))) {
+            try buf.append(self.cur.?);
+            self.readNextChar();
         }
         // Optional `E'
         if (self.cur == 'E' or self.cur == 'e') {
-            try buf.append(self.cur);
-            try self.readNextChar();
+            try buf.append(self.cur.?);
+            self.readNextChar();
             // Optional exponent sign
             if (self.cur == '+' or self.cur == '-') {
-                try buf.append(self.cur);
-                try self.readNextChar();
+                try buf.append(self.cur.?);
+                self.readNextChar();
             }
         }
         // Second decimal part, or hex/binary/octal characters
-        while (std.ascii.isAlphanumeric(self.cur)) {
-            try buf.append(self.cur);
-            try self.readNextChar();
+        while (self.cur != null and std.ascii.isAlphanumeric(self.cur.?)) {
+            try buf.append(self.cur.?);
+            self.readNextChar();
         }
 
         const s: []const u8 = try buf.toOwnedSlice();
@@ -244,6 +297,10 @@ pub const Lexer = struct {
 
 const assert = testing.assert;
 const assert_errmsg = testing.assert_errmsg;
+
+test "sizeof Token" {
+    std.debug.print("sizeof(Token) = {d}\n", .{@sizeOf(Token)});
+}
 
 test "parse tokens" {
     const source = 
@@ -319,11 +376,12 @@ test "parse tokens" {
             "Type mismatch: {s} != {s}\n", .{@tagName(expected.tt), @tagName(token.tokentype)});
 
         if (token.has_value()) {
-            assert_errmsg(std.mem.eql(u8, expected.lit, literals.items[token.literal.index]),
-                "Value mismatch: {s} != {s}\n", .{expected.lit, literals.items[token.literal.index]});
+            assert_errmsg(std.mem.eql(u8, expected.lit, literals.items[token.literal_index]),
+                "Value mismatch: {s} != {s}\n", .{expected.lit, literals.items[token.literal_index]});
         } else {
-            assert_errmsg(std.mem.eql(u8, expected.lit, std.mem.span(token.literal.static)),
-                "Value mismatch: {s} != {s}\n", .{expected.lit, std.mem.span(token.literal.static)});
+            
+            assert_errmsg(std.mem.eql(u8, expected.lit, tokens.token_type_str(token.tokentype)),
+                "Value mismatch: {s} != {s}\n", .{expected.lit, tokens.token_type_str(token.tokentype)});
         }
     }
 

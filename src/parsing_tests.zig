@@ -52,7 +52,7 @@ fn verifyAST(allocator: std.mem.Allocator, nodes: []const ast.Node, literals: []
     }
 }
 
-test "parse assign" {
+test "parse testing" {
     const alloc = std.testing.allocator;
     
     const source: []const u8 = 
@@ -62,13 +62,18 @@ test "parse assign" {
     \\a,b,c = 1,2,3;
     \\y = -x^2; y == -x^2^1;
     \\concat = "I have " .. 99 .. " problems"
-    \\but = "semicolons aint " .. 1 
+    \\but = "semicolons aint " .. 1
+    // \\comments exist... -- line comment
+    // \\--[[
+    // \\block.comments.too
+    // \\]]
+    // \\test = nil;
     ;
     std.debug.print("Source:\n{s}\n", .{source});
     var context = try ParserContext.init(alloc, source);
+    defer context.deinit();
     var lexer = Lexer.init(alloc, &context.literals, context.source.reader().any());
     var parser = try Parser.init(alloc, &lexer, &context.literals, &context.nodes);
-    defer context.deinit();
     
     const root = try parser.parseProgram();
     

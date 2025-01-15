@@ -1,9 +1,10 @@
+const std = @import("std");
 // Naming convention:
 // if the symbol always has the same meaning, then its token name is that meaning.
 // if the symbol's meaning changes meaning with context, then its token name is the symbol's name.
 // though, this is a loose convention.
 
-pub const TokenType = enum {
+pub const TokenType = enum(u8) {
     ILLEGAL,
     EOF,
     NIL, // ~
@@ -49,16 +50,15 @@ pub const TokenType = enum {
 };
 
 pub const TokenLiteral = union {
-    static: [*:0]const u8,
+    none: void,
     index: usize, // index into strings arraylist
 };
 
-pub const Token = struct {
+pub const Token = packed struct {
     const Self = @This();
 
     tokentype: TokenType,
-    // will be a string if the value varies between token instances
-    literal: TokenLiteral,
+    literal_index: u56 = 0,
 
     pub fn has_value(self: Self) bool {
         return switch(self.tokentype) {
@@ -78,11 +78,14 @@ pub fn is_infix_right_associative(tt: TokenType) bool {
     };
 }
 
-pub fn token_type_str(tt: TokenType) ?[]const u8 {
+pub fn token_type_str(tt: TokenType) []const u8 {
     return switch (tt) {
         .ILLEGAL => "<ILLEGAL>", // illegal
         .EOF => "", // emptystr
         .NIL => "~", // ~
+        .IDENT => "<IDENT>",
+        .STRING => "<STRING>",
+        .NUMBER => "<NUMBER>",
         .ELLIPSIS => "...", // ...
         .ASSIGN => "=", // =
         .DOT => ".", // .
@@ -116,6 +119,5 @@ pub fn token_type_str(tt: TokenType) ?[]const u8 {
         .LBRACKET => "[", // [
         .RBRACKET => "]", // ]
         .QUESTION => "?", // ?
-        else => null
     };
 }
