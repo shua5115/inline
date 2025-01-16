@@ -22,6 +22,7 @@ pub const Expression = union(enum) {
     PrefixExpression: PrefixExpression,
     InfixExpression: InfixExpression,
     CallExpression: CallExpression,
+    LoopExpression: LoopExpression,
     Block: Block,
     Break: Break,
     Return: Return,
@@ -56,8 +57,8 @@ pub const StringLiteral = struct {
 };
 
 pub const FunctionLiteral = struct {
-    params_index: AstIndex,
-    body_index: AstIndex,
+    params_start: AstIndex,
+    body_start: AstIndex,
 };
 
 pub const TableLiteral = struct {
@@ -80,13 +81,16 @@ pub const CallExpression = struct {
     args_index: AstIndex,
 };
 
+pub const LoopExpression = struct {
+    cond_index: AstIndex,
+    body_index: AstIndex,
+};
+
 pub const Block = struct {
     start_index: AstIndex,
 };
 
-pub const Break = struct {
-    
-};
+pub const Break = struct {};
 
 pub const Return = struct {
     rhs_index: AstIndex,
@@ -99,10 +103,18 @@ pub fn write_ast_list(writer: std.io.AnyWriter, nodes: []const Node, literals: [
             .Identifier => try writer.print("({s})", .{literals[n.expr.Identifier.literal_index]}),
             .StringLiteral => try writer.print("({s})", .{literals[n.expr.StringLiteral.literal_index]}),
             .NumberLiteral => try writer.print("({s})", .{literals[n.expr.NumberLiteral.literal_index]}),
+            .Global => try writer.print("(->{d})", .{@intFromEnum(n.expr.Global.rhs_index)}),
             .PrefixExpression => try writer.print("({s} ->{d})", .{tokens.token_type_str(n.expr.PrefixExpression.op), @intFromEnum(n.expr.PrefixExpression.rhs_index)}),
             .InfixExpression => try writer.print("(->{d} {s} ->{d})", .{@intFromEnum(n.expr.InfixExpression.lhs_index), tokens.token_type_str(n.expr.InfixExpression.op), @intFromEnum(n.expr.InfixExpression.rhs_index)}),
-            .FunctionLiteral => try writer.print("(->{d})", .{@intFromEnum(n.expr.FunctionLiteral.body_index)}),
+            .FunctionLiteral => try writer.print("(->{d})", .{@intFromEnum(n.expr.FunctionLiteral.body_start)}),
             .Block => try writer.print("(->{d})", .{@intFromEnum(n.expr.Block.start_index)}),
+            .LoopExpression => {
+                if (n.expr.LoopExpression.cond_index == .FINAL) {
+                    try writer.print("(? ->{d})", .{@intFromEnum(n.expr.LoopExpression.body_index)});
+                } else {
+                    try writer.print("(->{d} ? ->{d})", .{@intFromEnum(n.expr.LoopExpression.cond_index), @intFromEnum(n.expr.LoopExpression.body_index)});
+                }
+            },
             .TableLiteral => try writer.print("(->{d})", .{@intFromEnum(n.expr.TableLiteral.start_index)}),
             else => {}
         }
@@ -158,7 +170,7 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
         },
         .FunctionLiteral => |n| {
             try writer.writeByte('[');
-            var child_index = n.params_index;
+            var child_index = n.params_start;
             while(child_index != .FINAL) {
                 try write_node(writer, nodes, literals, child_index);
                 const child_node = nodes.*[@intFromEnum(child_index)];
@@ -166,7 +178,7 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
                 if (child_index != .FINAL) _ = try writer.write(", ");
             }
             _ = try writer.write("](");
-            child_index = n.body_index;
+            child_index = n.body_start;
             while(child_index != .FINAL) {
                 try write_node(writer, nodes, literals, child_index);
                 const child_node = nodes.*[@intFromEnum(child_index)];
@@ -221,6 +233,11 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
                 if (child_index != .FINAL) _ = try writer.write("; ");
             }
             try writer.writeByte(')');
+        },
+        .LoopExpression => |n| {
+            try write_node(writer, nodes, literals, n.cond_index);
+            try writer.writeByte('?');
+            try write_node(writer, nodes, literals, n.body_index);
         },
         .Break => {
             _ = try writer.write("^^");

@@ -20,6 +20,7 @@ const OpPriority = enum(u8) {
     SUM,
     PRODUCT,
     MOD,
+    LOOP,
     PREFIX,
     POW,
     CALL,
@@ -43,13 +44,14 @@ fn op_priority(tt: TokenType) OpPriority {
         .ASTERISK => OpPriority.PRODUCT,
         .SLASH => OpPriority.PRODUCT,
         .MOD => OpPriority.MOD,
-        .CARAT => OpPriority.POW,
         .CONCAT => OpPriority.CONCAT,
+        .QUESTION => OpPriority.LOOP,
         .NOT => OpPriority.PREFIX,
         .HASH => OpPriority.PREFIX,
         .META => OpPriority.PREFIX,
         .COLON => OpPriority.PREFIX,
         .AT => OpPriority.PREFIX,
+        .CARAT => OpPriority.POW,
         .LPAREN => OpPriority.CALL,
         .DOT => OpPriority.INDEX,
         else => OpPriority.LOWEST
@@ -65,6 +67,8 @@ pub const ParseError = error {
     MALFORMED_TABLE_LITERAL,
     INVALID_ARGLIST,
     MISSING_FN_BODY,
+    INVALID_LOOP_ARGUMENT,
+    MISSING_LOOP_BODY,
 };
 
 pub const Parser = struct {
@@ -135,7 +139,7 @@ pub const Parser = struct {
 
     pub fn getNode(self: *Self, node_index: ast.AstIndex) ?*ast.Node {
         const i: usize = @intFromEnum(node_index);
-        if (i >= self.nodes.items.len) return null;
+        if (node_index == .FINAL or i >= self.nodes.items.len) return null;
         return &self.nodes.items[i];
     }
 
@@ -174,14 +178,13 @@ pub const Parser = struct {
         if (self.cur.tokentype == .EOF) {
             return node_index;
         }
-
         
         var cur_index = try expect(self.parseStatement());
         self.getNode(node_index).?.expr.Block.start_index = cur_index;
 
         while (self.cur.tokentype != .EOF) {
             const next_index = try expect(self.parseStatement());
-            const cur_stmt = self.getNode(cur_index) orelse return ParseError.SYNTAX_ERROR;
+            const cur_stmt = self.getNode(cur_index).?;
             cur_stmt.next_index = next_index;
             cur_index = next_index;
         }
@@ -216,6 +219,7 @@ pub const Parser = struct {
             TokenType.HASH,
             TokenType.META,
             TokenType.COLON => parsePrefixExpression,
+            TokenType.QUESTION => parseLoopPrefix,
             TokenType.AT => parseGlobal,
             TokenType.LPAREN => parseBlock,
             TokenType.LBRACKET => parseFunctionLiteral,
@@ -266,6 +270,7 @@ pub const Parser = struct {
             TokenType.CARAT,
             TokenType.CONCAT,
             TokenType.DOT => parseInfixExpression,
+            TokenType.QUESTION => parseLoopInfix,
             TokenType.LPAREN => parseCallExpression,
             else => null
         };
@@ -297,11 +302,13 @@ pub const Parser = struct {
 
     fn parseNil(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .NIL);
+        try self.nextToken();
         return self.pushNode(ast.Node{.expr = .{ .Nil = .{} }});
     }
 
     fn parseEllipsis(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .ELLIPSIS);
+        try self.nextToken();
         return self.pushNode(ast.Node{.expr = .{ .Ellipsis = .{} }});
     }
 
@@ -342,13 +349,33 @@ pub const Parser = struct {
         return node_index;
     }
 
+    fn parseLoopPrefix(self: *Self) !ast.AstIndex {
+        return self.parseLoopInfix(ast.AstIndex.FINAL);
+    }
+
+    fn parseLoopInfix(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        std.debug.print("left type: {s}\n", .{if (left == .FINAL) "null" else @tagName(self.getNode(left).?.expr)});
+        std.debug.assert(self.cur.tokentype == .QUESTION);
+        if (left != .FINAL and self.getNode(left).?.expr != .Block) return ParseError.INVALID_LOOP_ARGUMENT;
+        const node_index = try self.pushNode(ast.Node{.expr=.{.LoopExpression = .{
+            .body_index = .FINAL,
+            .cond_index = left,
+        }}});
+        try self.nextToken();
+        if (self.cur.tokentype != .LPAREN) return ParseError.MISSING_LOOP_BODY;
+        
+        self.getNode(node_index).?.expr.LoopExpression.body_index = try self.parseBlock();
+
+        return node_index;
+    }
+
     fn parseGlobal(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .AT);
         try self.nextToken();
         const node_index = try self.pushNode(ast.Node{.expr = .{
             .Global = .{.rhs_index = .FINAL }
         }});
-        const rhs_index = try self.parseExpression(.LOWEST);
+        const rhs_index = try self.parseExpression(.PREFIX);
         self.getNode(node_index).?.expr.Global.rhs_index = rhs_index;
         return node_index;
     }
@@ -382,8 +409,8 @@ pub const Parser = struct {
     fn parseFunctionLiteral(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .LBRACKET);
         const node_index = try self.pushNode(ast.Node{.expr = .{ .FunctionLiteral = .{
-            .params_index = .FINAL,
-            .body_index = .FINAL,
+            .params_start = .FINAL,
+            .body_start = .FINAL,
         }}});
 
         try self.nextToken();
@@ -403,7 +430,7 @@ pub const Parser = struct {
                 
                 if (prev_index == .FINAL) {
                     // then this is the first, so set the param list head here
-                    self.getNode(node_index).?.expr.FunctionLiteral.params_index = cur_index;
+                    self.getNode(node_index).?.expr.FunctionLiteral.params_start = cur_index;
                 } else {
                     // link the previous node to here
                     self.getNode(prev_index).?.next_index = cur_index;
@@ -430,7 +457,7 @@ pub const Parser = struct {
 
         // Read function body
         var cur_index = try self.parseStatement();
-        self.getNode(node_index).?.expr.FunctionLiteral.body_index = cur_index;
+        self.getNode(node_index).?.expr.FunctionLiteral.body_start = cur_index;
 
         while (self.cur.tokentype != .RPAREN and self.cur.tokentype != .EOF) {
             const next_index = try self.parseStatement();

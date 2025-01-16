@@ -6,8 +6,6 @@ const Token = tokens.Token;
 const TokenType = tokens.TokenType;
 const TokenLiteral = tokens.TokenLiteral;
 
-const FiFo = std.fifo.LinearFifo(u8, .{.Dynamic});
-
 pub fn isIdentChar(c: u8) bool {
     return c == '_' or std.ascii.isAlphanumeric(c);
 }
@@ -61,7 +59,6 @@ pub const Lexer = struct {
         const eof = Token{.tokentype = .EOF};
         self.skipWhitespace();
         while (self.cur == '-' and self.next == '-') {
-            std.debug.print("COMMENT STARTED!\n", .{});
             self.readNextChar();
             self.readNextChar();
             self.skipComment();
@@ -163,7 +160,6 @@ pub const Lexer = struct {
     }
 
     pub fn skipComment(self: *Self) void {
-        defer std.debug.print("COMMEND ENDED!\n", .{});
         var level: usize = 0;
         var block_comment = false;
         if ((self.cur orelse return) == '[') {
@@ -177,25 +173,20 @@ pub const Lexer = struct {
                 self.readNextChar();
             }
         }
-        std.debug.print("Is block comment? {d}, level={d}\n", .{@intFromBool(block_comment), level});
         
         while (true) {
             const c = self.cur orelse return;
-            std.debug.print("comment parsing: {c}\n", .{c});
             if (block_comment and c == ']') {
-                std.debug.print("block commend end started!\n", .{});
                 self.readNextChar();
                 var endlevel: usize = 0;
                 while((self.cur orelse return) == '=') {
                     endlevel += 1;
                     self.readNextChar();
                 }
-                std.debug.print("block commend levels: {d} vs. {d}\n", .{level, endlevel});
                 if ((self.cur orelse return) == ']' and endlevel == level) {
                     self.readNextChar();
                     return;
                 }
-                std.debug.print("incomplete block comment end!\n", .{});
             } else if (!block_comment and c == '\n') {
                 self.readNextChar();
                 return;

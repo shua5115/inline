@@ -59,15 +59,26 @@ test "parse testing" {
     \\inline = "Hello, world!";
     \\add = [a, b](^a+b);
     \\table = {1, 2, 3};
+    \\nil = ~;
     \\a,b,c = 1,2,3;
     \\y = -x^2; y == -x^2^1;
-    \\concat = "I have " .. 99 .. " problems"
-    \\but = "semicolons aint " .. 1
-    // \\comments exist... -- line comment
-    // \\--[[
-    // \\block.comments.too
-    // \\]]
-    // \\test = nil;
+    \\concat = "I have " .. 99 .. " problems";
+    \\but = "semicolons aint " .. 1;
+    \\comments... -- line comment
+    \\--[[
+    \\block.comments.too
+    \\]]
+    \\--[===[
+    \\[[big]] block comments
+    \\]===]
+    \\type = :obj -- lua: type(obj)
+    \\metatable = ::obj -- lua: getmetatable(obj)
+    \\::obj = meta -- lua: setmetatable(obj, meta)
+    \\global_obj = @obj
+    \\@obj = val;
+    \\@(3) = "global table indexed";
+    \\?(infinite_loop);
+    \\(a==!~)?(a = 1); -- while loop
     ;
     std.debug.print("Source:\n{s}\n", .{source});
     var context = try ParserContext.init(alloc, source);
@@ -83,4 +94,8 @@ test "parse testing" {
 
     std.debug.print("\nAST as list:\n", .{});
     try ast.write_ast_list(std.io.getStdErr().writer().any(), context.nodes.items, context.literals.items);
+}
+
+test "size of Node" {
+    std.debug.print("sizeof(Node) = {d}\n", .{@sizeOf(ast.Node)});
 }
