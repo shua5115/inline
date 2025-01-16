@@ -84,13 +84,18 @@ test "parse testing" {
     var context = try ParserContext.init(alloc, source);
     defer context.deinit();
     var lexer = Lexer.init(alloc, &context.literals, context.source.reader().any());
+    defer lexer.deinit();
     var parser = try Parser.init(alloc, &lexer, &context.literals, &context.nodes);
+    defer parser.deinit();
     
     const root = try parser.parseProgram();
-    
+
     std.debug.print("\nParsed:\n", .{});
     try ast.write_node(std.io.getStdErr().writer().any(), &context.nodes.items, &context.literals.items, root);
     std.debug.print("\n", .{});
+
+    const nliterals = context.literals.items.len;
+    std.debug.print("\nLiterals stored: {d}\n", .{nliterals});
 
     std.debug.print("\nAST as list:\n", .{});
     try ast.write_ast_list(std.io.getStdErr().writer().any(), context.nodes.items, context.literals.items);

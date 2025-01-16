@@ -27,23 +27,32 @@ pub const Lexer = struct {
     /// A store of all literal values read from the source.
     /// All stored slices must be free'd using the Lexer's allocator, not the ArrayList's.
     literals: *std.ArrayList([]const u8),
+    literal_set: std.StringHashMap(usize),
     input: std.io.AnyReader,
     cur: ?u8,
     next: ?u8,
+    literal_buf: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator, literals: *std.ArrayList([]const u8), reader: std.io.AnyReader) Lexer {
         var lexer = Lexer{
             .allocator = allocator,
             .literals = literals,
+            .literal_set = std.StringHashMap(usize).init(allocator),
             .input = reader,
             .cur = undefined,
             .next = undefined,
+            .literal_buf = std.ArrayList(u8).init(allocator),
         };
 
         lexer.cur = (reader.readByte() catch null);
         lexer.next = (reader.readByte() catch null);
 
         return lexer;
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.literal_buf.deinit();
+        self.literal_set.deinit();
     }
 
     /// Reads one character from input.
@@ -196,16 +205,25 @@ pub const Lexer = struct {
         }
     }
 
-    pub fn registerLiteral(self: *Self, string: []const u8) std.mem.Allocator.Error!usize {
-        // TODO optimize repeated literals to use the same index to avoid allocation
+    /// Register a literal contained within literal_buf.
+    /// If the literal is already registered, the original will be returned.
+    /// In both cases, the literal_buf will be cleared, but not free'd (so the allocated capacity can be reused).
+    fn registerLiteral(self: *Self) std.mem.Allocator.Error!usize {
+        if (self.literal_set.get(self.literal_buf.items)) |index| {
+            self.literal_buf.items.len = 0;
+            return index;
+        }
+        const string = try self.literal_buf.toOwnedSlice();
         try self.literals.append(string);
-        return self.literals.items.len-1;
+        const index = self.literals.items.len-1;
+        try self.literal_set.put(string, index);
+        return index;
     }
 
     /// Reads a string literal and returns its index in the ArrayList of literals.
     pub fn readStringLiteral(self: *Self) !usize {
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
+        var buf = &self.literal_buf;
+        buf.items.len = 0; // clear without freeing
         const start = self.cur;
         
         std.debug.assert(start == '"' or start == '\'');
@@ -239,25 +257,23 @@ pub const Lexer = struct {
                 try buf.append(c);
             }
         }
-        const s: []const u8 = try buf.toOwnedSlice();
-        return registerLiteral(self, s);
+        return registerLiteral(self);
     }
 
     pub fn readIdentifier(self: *Self) !usize {
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
+        var buf = &self.literal_buf;
+        buf.items.len = 0; // clear without freeing
         while (self.cur != null and isIdentChar(self.cur.?)) {
             try buf.append(self.cur.?);
             self.readNextChar();
         }
 
-        const s: []const u8 = try buf.toOwnedSlice();
-        return registerLiteral(self, s);
+        return registerLiteral(self);
     }
 
     pub fn readNumber(self: *Self) !usize {
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
+        var buf = &self.literal_buf;
+        buf.items.len = 0; // clear without freeing
         // First decimal part
         while (self.cur != null and (self.cur == '.' or isDigit(self.cur.?))) {
             try buf.append(self.cur.?);
@@ -279,8 +295,7 @@ pub const Lexer = struct {
             self.readNextChar();
         }
 
-        const s: []const u8 = try buf.toOwnedSlice();
-        return registerLiteral(self, s);
+        return registerLiteral(self);
     }
 };
 
@@ -356,6 +371,7 @@ test "parse tokens" {
     try input.write(source);
     
     var lexer = Lexer.init(alloc, &literals, input.reader().any());
+    defer lexer.deinit();
     
     for (expected_tokens) |expected| {
         const token = try lexer.nextToken();
