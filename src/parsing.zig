@@ -2,6 +2,7 @@ const std = @import("std");
 const tokens = @import("tokens.zig");
 const lexing = @import("lexing.zig");
 const ast = @import("ast.zig");
+const luavm = @import("luavm.zig");
 
 const Token = tokens.Token;
 const TokenType = tokens.TokenType;
@@ -213,12 +214,12 @@ pub const Parser = struct {
             TokenType.IDENT => parseIdentifier,
             TokenType.NUMBER => parseNumberLiteral,
             TokenType.DOT => parseNumberLiteral,
-            TokenType.NOT, 
-            TokenType.PLUS,
-            TokenType.MINUS,
-            TokenType.HASH,
-            TokenType.META,
-            TokenType.COLON => parsePrefixExpression,
+            TokenType.NOT => parsePrefixNot,
+            TokenType.PLUS => parsePrefixUnp,
+            TokenType.MINUS => parsePrefixUnm,
+            TokenType.HASH => parsePrefixLen,
+            TokenType.META => parsePrefixMeta,
+            TokenType.COLON => parsePrefixType,
             TokenType.QUESTION => parseLoopPrefix,
             TokenType.AT => parseGlobal,
             TokenType.LPAREN => parseBlock,
@@ -252,24 +253,24 @@ pub const Parser = struct {
 
     fn infixParseFn(tt: TokenType) ?*const fn(*Self, ast.AstIndex)anyerror!ast.AstIndex {
         return switch (tt) {
-            TokenType.COMMA,
-            TokenType.ASSIGN,
-            TokenType.OR,
-            TokenType.AND,
-            TokenType.EQ,
-            TokenType.NEQ,
-            TokenType.LT,
-            TokenType.GT,
-            TokenType.LE,
-            TokenType.GE,
-            TokenType.PLUS,
-            TokenType.MINUS,
-            TokenType.ASTERISK,
-            TokenType.SLASH,
-            TokenType.MOD,
-            TokenType.CARAT,
-            TokenType.CONCAT,
-            TokenType.DOT => parseInfixExpression,
+            TokenType.COMMA => parseInfixComma,
+            TokenType.ASSIGN => parseInfixAssign,
+            TokenType.OR => parseInfixOr,
+            TokenType.AND => parseInfixAnd,
+            TokenType.EQ => parseInfixEq,
+            TokenType.NEQ => parseInfixNeq,
+            TokenType.LT => parseInfixLT,
+            TokenType.GT => parseInfixGT,
+            TokenType.LE => parseInfixLE,
+            TokenType.GE => parseInfixGE,
+            TokenType.PLUS => parseInfixPlus,
+            TokenType.MINUS => parseInfixMinus,
+            TokenType.ASTERISK => parseInfixMul,
+            TokenType.SLASH => parseInfixDiv,
+            TokenType.MOD => parseInfixMod,
+            TokenType.CARAT => parseInfixPow,
+            TokenType.CONCAT => parseInfixConcat,
+            TokenType.DOT => parseInfixIndex,
             TokenType.QUESTION => parseLoopInfix,
             TokenType.LPAREN => parseCallExpression,
             else => null
@@ -325,10 +326,21 @@ pub const Parser = struct {
         std.debug.assert(self.cur.tokentype == .NUMBER);
         const literal_index = self.cur.literal_index;
         const buf = self.literals.items[literal_index];
-        const val = std.fmt.parseFloat(f64, buf) catch blk: {
-            break :blk @as(f64, @floatFromInt(std.fmt.parseInt(i64, buf, 0) catch {
-                return ParseError.MALFORMED_NUMBER;
-            }));
+        const val: luavm.lua_Number = switch(@typeInfo(luavm.lua_Number)) {
+            .Float => std.fmt.parseFloat(luavm.lua_Number, buf) catch (
+                @as(luavm.lua_Number, @floatFromInt(std.fmt.parseInt(i64, buf, 0) catch {
+                    return ParseError.MALFORMED_NUMBER;
+                }))),
+            .Int => blk: {
+                const f = std.fmt.parseFloat(f32, buf);
+                if (f catch null) |v| {
+                    break :blk @as(luavm.lua_Number, @intFromFloat(v));
+                }
+                break :blk std.fmt.parseInt(luavm.lua_Number, buf, 0) catch {
+                    return ParseError.MALFORMED_NUMBER;
+                };
+            },
+            else => @compileError("lua_Number must be of type int or float!")
         };
         try self.nextToken();
 
@@ -337,15 +349,48 @@ pub const Parser = struct {
         }});
     }
 
-    fn parsePrefixExpression(self: *Self) !ast.AstIndex {
-        const kind = self.cur.tokentype;
+    fn parsePrefixNot(self: *Self) !ast.AstIndex {
         try self.nextToken();
-        const node_index = try self.pushNode(ast.Node{.expr=.{.PrefixExpression = .{
-            .op = kind,
-            .rhs_index = .FINAL,
-        }}});
+        const node_index = try self.pushNode(ast.Node{.expr=.{.Not=.{.rhs_index=.FINAL}}});
         const rhs_index = try self.parseExpression(.PREFIX);
-        self.getNode(node_index).?.expr.PrefixExpression.rhs_index = rhs_index;
+        self.getNode(node_index).?.expr.Not.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parsePrefixUnp(self: *Self) !ast.AstIndex {
+        try self.nextToken();
+        return self.parseExpression(.PREFIX);
+    }
+
+    fn parsePrefixUnm(self: *Self) !ast.AstIndex {
+        try self.nextToken();
+        const node_index = try self.pushNode(ast.Node{.expr=.{.Unm=.{.rhs_index=.FINAL}}});
+        const rhs_index = try self.parseExpression(.PREFIX);
+        self.getNode(node_index).?.expr.Unm.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parsePrefixLen(self: *Self) !ast.AstIndex {
+        try self.nextToken();
+        const node_index = try self.pushNode(ast.Node{.expr=.{.Len=.{.rhs_index=.FINAL}}});
+        const rhs_index = try self.parseExpression(.PREFIX);
+        self.getNode(node_index).?.expr.Len.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parsePrefixType(self: *Self) !ast.AstIndex {
+        try self.nextToken();
+        const node_index = try self.pushNode(ast.Node{.expr=.{.Type=.{.rhs_index=.FINAL}}});
+        const rhs_index = try self.parseExpression(.PREFIX);
+        self.getNode(node_index).?.expr.Type.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parsePrefixMeta(self: *Self) !ast.AstIndex {
+        try self.nextToken();
+        const node_index = try self.pushNode(ast.Node{.expr=.{.Meta=.{.rhs_index=.FINAL}}});
+        const rhs_index = try self.parseExpression(.PREFIX);
+        self.getNode(node_index).?.expr.Meta.rhs_index = rhs_index;
         return node_index;
     }
 
@@ -357,14 +402,14 @@ pub const Parser = struct {
         std.debug.print("left type: {s}\n", .{if (left == .FINAL) "null" else @tagName(self.getNode(left).?.expr)});
         std.debug.assert(self.cur.tokentype == .QUESTION);
         if (left != .FINAL and self.getNode(left).?.expr != .Block) return ParseError.INVALID_LOOP_ARGUMENT;
-        const node_index = try self.pushNode(ast.Node{.expr=.{.LoopExpression = .{
+        const node_index = try self.pushNode(ast.Node{.expr=.{.Loop = .{
             .body_index = .FINAL,
             .cond_index = left,
         }}});
         try self.nextToken();
         if (self.cur.tokentype != .LPAREN) return ParseError.MISSING_LOOP_BODY;
         
-        self.getNode(node_index).?.expr.LoopExpression.body_index = try self.parseBlock();
+        self.getNode(node_index).?.expr.Loop.body_index = try self.parseBlock();
 
         return node_index;
     }
@@ -517,25 +562,194 @@ pub const Parser = struct {
 
     // INFIX EXPRESSIONS
 
-    fn parseInfixExpression(self: *Self, left: ast.AstIndex) !ast.AstIndex {
-        const node_index = try self.pushNode(ast.Node{.expr = .{ .InfixExpression = .{
-            .lhs_index = left,
-            .op = self.cur.tokentype,
-            .rhs_index = .FINAL,
-        }}});
-        var precedence = op_priority(self.cur.tokentype);
-        if (tokens.is_infix_right_associative(self.cur.tokentype)) {
-            precedence = @enumFromInt(@intFromEnum(precedence) - 1);
-        }
+    fn parseInfixComma(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Comma=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
         try self.nextToken();
-        const rhs_index = try self.parseExpression(precedence);
-        self.getNode(node_index).?.expr.InfixExpression.rhs_index = rhs_index;
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.COMMA));
+        self.getNode(node_index).?.expr.Comma.rhs_index = rhs_index;
+        return node_index;
+    }
 
+    fn parseInfixAssign(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Assign=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.ASSIGN));
+        self.getNode(node_index).?.expr.Assign.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixOr(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Or=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.OR));
+        self.getNode(node_index).?.expr.Or.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixAnd(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .And=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.AND));
+        self.getNode(node_index).?.expr.And.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixEq(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Eq=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.EQ));
+        self.getNode(node_index).?.expr.Eq.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixNeq(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Neq=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.NEQ));
+        self.getNode(node_index).?.expr.Neq.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixLT(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .LT=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.LT));
+        self.getNode(node_index).?.expr.LT.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixGT(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .GT=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.GT));
+        self.getNode(node_index).?.expr.GT.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixLE(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .LE=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.LE));
+        self.getNode(node_index).?.expr.LE.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixGE(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .GE=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.GE));
+        self.getNode(node_index).?.expr.GE.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixPlus(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Plus=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.PLUS));
+        self.getNode(node_index).?.expr.Plus.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixMinus(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Minus =.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.MINUS));
+        self.getNode(node_index).?.expr.Minus.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixMul(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Mul=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.ASTERISK));
+        self.getNode(node_index).?.expr.Mul.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixDiv(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Div=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.SLASH));
+        self.getNode(node_index).?.expr.Div.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixMod(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Mod=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.MOD));
+        self.getNode(node_index).?.expr.Mod.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixPow(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Pow=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        // right-associative, so decrease priority by 1
+        const rhs_index = try self.parseExpression(
+            comptime (@enumFromInt( @intFromEnum(op_priority(TokenType.CARAT)) - 1))
+        );
+        self.getNode(node_index).?.expr.Pow.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixConcat(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Concat=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        // right-associative, so decrease priority by 1
+        const rhs_index = try self.parseExpression(
+            comptime (@enumFromInt( @intFromEnum(op_priority(TokenType.CONCAT)) - 1))
+        );
+        self.getNode(node_index).?.expr.Concat.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixIndex(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Index=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.DOT));
+        self.getNode(node_index).?.expr.Index.rhs_index = rhs_index;
         return node_index;
     }
 
     fn parseCallExpression(self: *Self, left: ast.AstIndex) !ast.AstIndex {
-        const node_index = try self.pushNode(ast.Node{.expr = .{ .CallExpression = .{
+        const node_index = try self.pushNode(ast.Node{.expr = .{ .Call = .{
             .lhs_index = left,
             .args_index = .FINAL,
         }}});
@@ -547,7 +761,7 @@ pub const Parser = struct {
         }
 
         var cur_index = try self.parseExpression(.LOWEST);
-        self.getNode(node_index).?.expr.CallExpression.args_index = cur_index;
+        self.getNode(node_index).?.expr.Call.args_index = cur_index;
 
         while (self.cur.tokentype != .RPAREN and self.cur.tokentype != .EOF) {
             if (self.cur.tokentype != .COMMA) return ParseError.INVALID_ARGLIST;

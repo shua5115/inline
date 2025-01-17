@@ -76,8 +76,8 @@ test "parse testing" {
     \\::obj = meta -- lua: setmetatable(obj, meta)
     \\global_obj = @obj
     \\@obj = val;
-    \\@(3) = "global table indexed";
-    \\?(infinite_loop);
+    \\@3.141592 = "global pi?";
+    \\?(not_infinite_loop; ^);
     \\(a==!~)?(a = 1); -- while loop
     ;
     std.debug.print("Source:\n{s}\n", .{source});
@@ -101,6 +101,9 @@ test "parse testing" {
     try ast.write_ast_list(std.io.getStdErr().writer().any(), context.nodes.items, context.literals.items);
 }
 
-test "size of Node" {
-    std.debug.print("sizeof(Node) = {d}\n", .{@sizeOf(ast.Node)});
+test "Node memory layout" {
+    std.debug.print(
+        "sizeof(Node) = {d}\nalignof(Node) = {d}\n",
+        .{@sizeOf(ast.Node), @alignOf(ast.Node)}
+    );
 }
