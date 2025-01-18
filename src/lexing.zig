@@ -4,7 +4,7 @@ const tokens = @import("tokens.zig");
 
 const Token = tokens.Token;
 const TokenType = tokens.TokenType;
-const TokenLiteral = tokens.TokenLiteral;
+const LiteralIndex = tokens.LiteralIndex;
 
 pub fn isIdentChar(c: u8) bool {
     return c == '_' or std.ascii.isAlphanumeric(c);
@@ -27,7 +27,7 @@ pub const Lexer = struct {
     /// A store of all literal values read from the source.
     /// All stored slices must be free'd using the Lexer's allocator, not the ArrayList's.
     literals: *std.ArrayList([]const u8),
-    literal_set: std.StringHashMap(usize),
+    literal_set: std.StringHashMap(LiteralIndex),
     input: std.io.AnyReader,
     cur: ?u8,
     next: ?u8,
@@ -37,7 +37,7 @@ pub const Lexer = struct {
         var lexer = Lexer{
             .allocator = allocator,
             .literals = literals,
-            .literal_set = std.StringHashMap(usize).init(allocator),
+            .literal_set = std.StringHashMap(LiteralIndex).init(allocator),
             .input = reader,
             .cur = undefined,
             .next = undefined,
@@ -70,7 +70,7 @@ pub const Lexer = struct {
         while (self.cur == '-' and self.next == '-') {
             self.readNextChar();
             self.readNextChar();
-            self.skipComment();
+            try self.skipComment();
             self.skipWhitespace();
         }
         const c = self.cur orelse return eof;
@@ -134,11 +134,10 @@ pub const Lexer = struct {
                 } else {
                     tok = .{.tokentype = TokenType.DOT};
                 },
-            ':' => if (self.next == ':') {
-                    tok = .{.tokentype=TokenType.META};
-                    self.readNextChar();
-                } else {
-                    tok = .{.tokentype=TokenType.COLON};
+            ':' => switch(self.next orelse '\x00') {
+                    ':' => {tok = .{.tokentype=TokenType.META}; self.readNextChar();},
+                    '=' => {tok = .{.tokentype=TokenType.DEFINE}; self.readNextChar();},
+                    else => tok = .{.tokentype=TokenType.COLON},
                 },
             ';' => tok = .{.tokentype=TokenType.SEMICOLON},
             ',' => tok = .{.tokentype=TokenType.COMMA},
@@ -146,15 +145,19 @@ pub const Lexer = struct {
             ')' => tok = .{.tokentype=TokenType.RPAREN},
             '{' => tok = .{.tokentype=TokenType.LBRACE},
             '}' => tok = .{.tokentype=TokenType.RBRACE},
-            '[' => tok = .{.tokentype=TokenType.LBRACKET},
+            '[' => if (self.next == '[' or self.next == '=') {
+                    return .{.tokentype=TokenType.STRING, .literal_index=try readStringLiteral(self)};
+                } else {
+                    tok = .{.tokentype=TokenType.LBRACKET};
+                },
             ']' => tok = .{.tokentype=TokenType.RBRACKET},
-            '"' => return .{.tokentype=TokenType.STRING, .literal_index=@truncate(try readStringLiteral(self))},
-            '\'' => return .{.tokentype=TokenType.STRING, .literal_index=@truncate(try readStringLiteral(self))},
+            '"' => return .{.tokentype=TokenType.STRING, .literal_index=try readStringLiteral(self)},
+            '\'' => return .{.tokentype=TokenType.STRING, .literal_index=try readStringLiteral(self)},
             else => if (!isDigit(c) and isIdentChar(c)) {
-                return .{.tokentype=TokenType.IDENT, .literal_index=@truncate(try readIdentifier(self))};
+                return .{.tokentype=TokenType.IDENT, .literal_index=try readIdentifier(self)};
             } else if (isDigit(c)) {
                 // does not end on last character, so return early
-                return .{.tokentype=TokenType.NUMBER, .literal_index=@truncate(try readNumber(self))};
+                return .{.tokentype=TokenType.NUMBER, .literal_index=try readNumber(self)};
             }
         }
         self.readNextChar();
@@ -168,7 +171,7 @@ pub const Lexer = struct {
         }
     }
 
-    pub fn skipComment(self: *Self) void {
+    pub fn skipComment(self: *Self) !void {
         var level: usize = 0;
         var block_comment = false;
         if ((self.cur orelse return) == '[') {
@@ -182,25 +185,18 @@ pub const Lexer = struct {
                 self.readNextChar();
             }
         }
-        
-        while (true) {
-            const c = self.cur orelse return;
-            if (block_comment and c == ']') {
-                self.readNextChar();
-                var endlevel: usize = 0;
-                while((self.cur orelse return) == '=') {
-                    endlevel += 1;
-                    self.readNextChar();
-                }
-                if ((self.cur orelse return) == ']' and endlevel == level) {
+        if (block_comment) {
+            try self.collectLongString(level);
+            self.literal_buf.items.len = 0; // clear read comment
+        } else {
+            while (true) {
+                const c = self.cur orelse return;
+                if (c == '\n') {
                     self.readNextChar();
                     return;
+                } else {
+                    self.readNextChar();
                 }
-            } else if (!block_comment and c == '\n') {
-                self.readNextChar();
-                return;
-            } else {
-                self.readNextChar();
             }
         }
     }
@@ -208,59 +204,116 @@ pub const Lexer = struct {
     /// Register a literal contained within literal_buf.
     /// If the literal is already registered, the original will be returned.
     /// In both cases, the literal_buf will be cleared, but not free'd (so the allocated capacity can be reused).
-    fn registerLiteral(self: *Self) std.mem.Allocator.Error!usize {
+    fn registerLiteral(self: *Self) std.mem.Allocator.Error!LiteralIndex {
+        // Prevent overflow errors
+        if (self.literals.items.len == std.math.maxInt(LiteralIndex)) return std.mem.Allocator.Error.OutOfMemory;
         if (self.literal_set.get(self.literal_buf.items)) |index| {
             self.literal_buf.items.len = 0;
             return index;
         }
         const string = try self.literal_buf.toOwnedSlice();
         try self.literals.append(string);
-        const index = self.literals.items.len-1;
+        const index: LiteralIndex = @truncate(self.literals.items.len - 1);
         try self.literal_set.put(string, index);
         return index;
     }
 
-    /// Reads a string literal and returns its index in the ArrayList of literals.
-    pub fn readStringLiteral(self: *Self) !usize {
+    /// Expects self.cur to be one after the starting brackets. Callers are expected to measure the level.
+    fn collectLongString(self: *Self, level: usize) !void {
         var buf = &self.literal_buf;
-        buf.items.len = 0; // clear without freeing
-        const start = self.cur;
-        
-        std.debug.assert(start == '"' or start == '\'');
-
+        buf.items.len = 0; // clear buffer
+        if (self.cur == '\n') self.readNextChar(); // skip first newline
         while (true) {
-            self.readNextChar();
-            const c = self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL;
-            if (c == '\\') {
-                self.readNextChar();
-                const c2 = switch (self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL) {
-                    'a' => 0x07,
-                    'b' => 0x08,
-                    'e' => 0x1B,
-                    'f' => 0x0C,
-                    'n' => 0x0A,
-                    'r' => 0x0D,
-                    't' => 0x09,
-                    'v' => 0x0B,
-                    '\\' => '\\',
-                    '\'' => '\'',
-                    '"' => '"',
-                    '?' => 0x3F,
-                    '0' => 0,
-                    else => self.cur.?
-                };
-                try buf.append(c2);
-            } else if (c == start) {
-                self.readNextChar();
-                break;
-            } else {
+            const c = self.cur orelse return;
+            if (c == ']') {
                 try buf.append(c);
+                self.readNextChar();
+                var endlevel: usize = 0;
+                while((self.cur orelse return) == '=') {
+                    endlevel += 1;
+                    try buf.append(self.cur.?);
+                    self.readNextChar();
+                }
+                if ((self.cur orelse return) == ']') {
+                    if (endlevel == level) {
+                        buf.items.len -= endlevel+2; // string ended, remove the ']', '=', and ']'
+                        self.readNextChar();
+                        return;
+                    }
+                } else try buf.append(self.cur.?);
+                // false alarm, keep the read characters, including the just-read non-']'
+            } else {
+                try buf.append(self.cur orelse return);
+                self.readNextChar();
             }
         }
-        return registerLiteral(self);
     }
 
-    pub fn readIdentifier(self: *Self) !usize {
+    /// Reads a string literal and returns its index in the ArrayList of literals.
+    pub fn readStringLiteral(self: *Self) !LiteralIndex {
+        var buf = &self.literal_buf;
+        buf.items.len = 0; // clear without freeing
+        const start = self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL;
+        std.debug.assert(start == '"' or start == '\'' or start == '[');
+        var level: usize = 0;
+        var block_comment = false;
+        if (start == '[') {
+            self.readNextChar();
+            while ((self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL) == '=') {
+                level += 1;
+                self.readNextChar();
+            }
+            if ((self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL) == '[') {
+                block_comment = true;
+                self.readNextChar();
+            } else return LexerError.INCOMPLETE_STRING_LITERAL;
+        }
+        if (block_comment) {
+            try self.collectLongString(level);
+        } else {
+            while (true) {
+                self.readNextChar();
+                const c = self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL;
+                if (c == '\\') {
+                    self.readNextChar();
+                    const c2 = switch (self.cur orelse return LexerError.INCOMPLETE_STRING_LITERAL) {
+                        'a' => 0x07,
+                        'b' => 0x08,
+                        'f' => 0x0C,
+                        'n' => 0x0A,
+                        'r' => 0x0D,
+                        't' => 0x09,
+                        'v' => 0x0B,
+                        '\\' => '\\',
+                        '\'' => '\'',
+                        '"' => '"',
+                        '[' => '[',
+                        ']' => ']',
+                        '0' => 0,
+                        else => if (isDigit(self.cur.?)) blk: {
+                            var cbuf = [3:0]u8{0, 0, 0};
+                            var i: u8 = 0;
+                            while (i < cbuf.len and self.cur != null and isDigit(self.cur.?)) {
+                                cbuf[i] = self.cur.?;
+                                i += 1;
+                            }
+                            const cslice: [*:0]const u8 = cbuf[0..];
+                            break :blk std.fmt.parseUnsigned(u8, std.mem.span(cslice), 10) catch unreachable;
+                        } else self.cur.?
+                    };
+                    try buf.append(c2);
+                } else if (c == start) {
+                    self.readNextChar();
+                    break;
+                } else {
+                    try buf.append(c);
+                }
+            }
+        }
+        return self.registerLiteral();
+    }
+
+    pub fn readIdentifier(self: *Self) !LiteralIndex {
         var buf = &self.literal_buf;
         buf.items.len = 0; // clear without freeing
         while (self.cur != null and isIdentChar(self.cur.?)) {
@@ -268,10 +321,10 @@ pub const Lexer = struct {
             self.readNextChar();
         }
 
-        return registerLiteral(self);
+        return self.registerLiteral();
     }
 
-    pub fn readNumber(self: *Self) !usize {
+    pub fn readNumber(self: *Self) !LiteralIndex {
         var buf = &self.literal_buf;
         buf.items.len = 0; // clear without freeing
         // First decimal part
@@ -295,7 +348,7 @@ pub const Lexer = struct {
             self.readNextChar();
         }
 
-        return registerLiteral(self);
+        return self.registerLiteral();
     }
 };
 

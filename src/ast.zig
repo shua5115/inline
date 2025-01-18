@@ -4,7 +4,7 @@ const lua_Number = @import("luavm.zig").lua_Number;
 
 const Token = tokens.Token;
 const TokenType = tokens.TokenType;
-const TokenLiteral = tokens.TokenLiteral;
+const LiteralIndex = tokens.LiteralIndex;
 
 pub const AstIndex = enum(usize) {
     FINAL = std.math.maxInt(usize),
@@ -20,15 +20,14 @@ pub const Expression = union(enum) {
     StringLiteral: StringLiteral,
     FunctionLiteral: FunctionLiteral,
     TableLiteral: TableLiteral,
-    // PrefixExpression: PrefixExpression,
     Not: Not,
     Unm: Unm,
     Len: Len,
     Type: Type,
     Meta: Meta,
-    // InfixExpression: InfixExpression,
     Comma: Comma,
     Assign: Assign,
+    Define: Define,
     Or: Or,
     And: And,
     Eq: Eq,
@@ -64,7 +63,7 @@ pub const Nil = struct {};
 pub const Ellipsis = struct {};
 
 pub const Identifier = struct {
-    literal_index: usize,
+    literal_index: LiteralIndex,
 };
 
 pub const Global = struct {
@@ -73,11 +72,11 @@ pub const Global = struct {
 
 pub const NumberLiteral = struct {
     value: lua_Number,
-    literal_index: usize,
+    literal_index: LiteralIndex
 };
 
 pub const StringLiteral = struct {
-    literal_index: usize,
+    literal_index: LiteralIndex,
 };
 
 pub const FunctionLiteral = struct {
@@ -110,6 +109,10 @@ pub const Comma = struct {
     rhs_index: AstIndex,
 };
 pub const Assign = struct {
+    lhs_index: AstIndex,
+    rhs_index: AstIndex,
+};
+pub const Define = struct {
     lhs_index: AstIndex,
     rhs_index: AstIndex,
 };
@@ -217,6 +220,7 @@ pub fn write_ast_list(writer: std.io.AnyWriter, nodes: []const Node, literals: [
             .Meta => |e| try writer.print("(:: ->{d})", .{@intFromEnum(e.rhs_index)}),
             .Comma => |e| try writer.print("(->{d} , ->{d})", .{@intFromEnum(e.lhs_index), @intFromEnum(e.rhs_index)}),
             .Assign => |e| try writer.print("(->{d} = ->{d})", .{@intFromEnum(e.lhs_index), @intFromEnum(e.rhs_index)}),
+            .Define => |e| try writer.print("(->{d} := ->{d})", .{@intFromEnum(e.lhs_index), @intFromEnum(e.rhs_index)}),
             .Or => |e| try writer.print("(->{d} | ->{d})", .{@intFromEnum(e.lhs_index), @intFromEnum(e.rhs_index)}),
             .And => |e| try writer.print("(->{d} & ->{d})", .{@intFromEnum(e.lhs_index), @intFromEnum(e.rhs_index)}),
             .Eq => |e| try writer.print("(->{d} == ->{d})", .{@intFromEnum(e.lhs_index), @intFromEnum(e.rhs_index)}),
@@ -235,13 +239,9 @@ pub fn write_ast_list(writer: std.io.AnyWriter, nodes: []const Node, literals: [
             .Index => |e| try writer.print("(->{d} . ->{d})", .{@intFromEnum(e.lhs_index), @intFromEnum(e.rhs_index)}),
             .Call => |e| try writer.print("(->{d}(->{d}))", .{@intFromEnum(e.lhs_index), @intFromEnum(e.args_index)}),
             .FunctionLiteral => |e| try writer.print("([->{d}](->{d}))", .{@intFromEnum(e.params_start), @intFromEnum(e.body_start)}),
-            .Block => try writer.print("(->{d})", .{@intFromEnum(n.expr.Block.start_index)}),
-            .Loop => if (n.expr.Loop.cond_index == .FINAL) {
-                    try writer.print("(? ->{d})", .{@intFromEnum(n.expr.Loop.body_index)});
-                } else {
-                    try writer.print("(->{d} ? ->{d})", .{@intFromEnum(n.expr.Loop.cond_index), @intFromEnum(n.expr.Loop.body_index)});
-                },
-            .TableLiteral => try writer.print("(->{d})", .{@intFromEnum(n.expr.TableLiteral.start_index)}),
+            .Block => |e| if (e.start_index != .FINAL) try writer.print("(->{d})", .{@intFromEnum(e.start_index)}),
+            .Loop => |e| try writer.print("(->{d} ? ->{d})", .{@intFromEnum(e.cond_index), @intFromEnum(e.body_index)}),
+            .TableLiteral => |e| try writer.print("(->{d})", .{@intFromEnum(e.start_index)}),
         }
         if (n.next_index != .FINAL) {
             try writer.print(" -> {d}", .{@intFromEnum(n.next_index)});
@@ -278,7 +278,6 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
                 _ = try switch (c) {
                     0x07 => writer.write("\\a"),
                     0x08 => writer.write("\\b"),
-                    0x1B => writer.write("\\e"),
                     0x0C => writer.write("\\f"),
                     0x0A => writer.write("\\n"),
                     0x0D => writer.write("\\r"),
@@ -287,7 +286,6 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
                     '\\' => writer.write("\\\\"),
                     '\'' => writer.write("\\'"),
                     '"' => writer.write("\\\""),
-                    0x3F => writer.write("\\?"),
                     else => {try writer.writeByte(c); continue;}
                 };
             }
@@ -366,6 +364,13 @@ pub fn write_node(writer: std.io.AnyWriter, nodes: *const[]const Node, literals:
             try writer.writeByte('(');
             try write_node(writer, nodes, literals, n.lhs_index);
             _ = try writer.write(" = ");
+            try write_node(writer, nodes, literals, n.rhs_index);
+            try writer.writeByte(')');
+        },
+        .Define => |n| {
+            try writer.writeByte('(');
+            try write_node(writer, nodes, literals, n.lhs_index);
+            _ = try writer.write(" := ");
             try write_node(writer, nodes, literals, n.rhs_index);
             try writer.writeByte(')');
         },

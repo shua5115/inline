@@ -56,14 +56,18 @@ test "parse testing" {
     const alloc = std.testing.allocator;
     
     const source: []const u8 = 
-    \\inline = "Hello, world!";
-    \\add = [a, b](^a+b);
-    \\table = {1, 2, 3};
-    \\nil = ~;
-    \\a,b,c = 1,2,3;
-    \\y = -x^2; y == -x^2^1;
-    \\concat = "I have " .. 99 .. " problems";
-    \\but = "semicolons aint " .. 1;
+    \\inline := "Hello, world!";
+    \\add := [a, b](^a+b);
+    \\table := {1, 2, 3};
+    \\nil := ~;
+    \\a,b,c := 1,2,3;
+    \\multiassign=a=b=c; -- assignments evaluated from right to left
+    \\y := -x^2; y == -x^2^1;
+    \\math_grouping := a*(b+c);
+    \\left_precedence := 1+2+3+4+5+6
+    \\right_precedence := 1^2^3^4^5^6 -- is 1, but your computer probably can't compute this
+    \\concat := "I have " .. 99 .. " problems";
+    \\but := "semicolons aint " .. 1;
     \\comments... -- line comment
     \\--[[
     \\block.comments.too
@@ -71,13 +75,20 @@ test "parse testing" {
     \\--[===[
     \\[[big]] block comments
     \\]===]
-    \\type = :obj -- lua: type(obj)
-    \\metatable = ::obj -- lua: getmetatable(obj)
+    \\bigstring = [[
+    \\just how I like 'em
+    \\with newlines and all
+    \\]]
+    \\biggerstring = [====[
+    \\[[nesting? fr?]]
+    \\]====]
+    \\type := :obj -- lua: type(obj)
+    \\metatable := ::obj -- lua: getmetatable(obj)
     \\::obj = meta -- lua: setmetatable(obj, meta)
-    \\global_obj = @obj
+    \\global_obj := @obj
     \\@obj = val;
     \\@3.141592 = "global pi?";
-    \\?(not_infinite_loop; ^);
+    \\()?(not_infinite_loop; ^^);
     \\(a==!~)?(a = 1); -- while loop
     ;
     std.debug.print("Source:\n{s}\n", .{source});
@@ -106,4 +117,20 @@ test "Node memory layout" {
         "sizeof(Node) = {d}\nalignof(Node) = {d}\n",
         .{@sizeOf(ast.Node), @alignOf(ast.Node)}
     );
+    const info = @typeInfo(ast.Expression);
+    const max_size: usize = 
+        comptime blk: {
+            var max: usize = 0;
+            for(info.Union.fields) |f| {
+                const sz = @sizeOf(f.type);
+                max = @max(max, sz);
+            }
+            break :blk max;
+        };
+    
+    std.debug.print(
+        "sizeof(Expression) = {d}\nalignof(Expression) = {d}\nmax Expression size = {d}\n",
+        .{@sizeOf(ast.Expression), @alignOf(ast.Expression), max_size}
+    );
+    
 }

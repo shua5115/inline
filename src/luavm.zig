@@ -1,10 +1,23 @@
+const std = @import("std");
 // CONFIGURATION
 
 pub const lua_Number = f64;
 
 // END CONFIGURATION
 
-pub const endianness = @import("builtin").target.cpu.arch.endian();
+pub const luac_Version: u8 = 0x51;
+pub const luac_Format: u8 = 0;
+pub const luac_IsLittleEndian: u8 = @intFromBool(@import("builtin").target.cpu.arch.endian() == .little);
+pub const luac_NumberIsInteger: u8 = @intFromBool(@typeInfo(lua_Number) == .Int);
+
+pub const LUAC_HEADER = std.fmt.comptimePrint(
+    "\x1BLUA{c}{c}{c}{c}{c}{c}{c}{c}",
+    .{
+        luac_Version, luac_Format, luac_IsLittleEndian,
+        @sizeOf(c_int), @sizeOf(usize), @sizeOf(Instruction), @sizeOf(lua_Number),
+        luac_NumberIsInteger
+    }
+);
 
 pub const Instruction = u32;
 

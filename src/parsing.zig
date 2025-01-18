@@ -6,7 +6,6 @@ const luavm = @import("luavm.zig");
 
 const Token = tokens.Token;
 const TokenType = tokens.TokenType;
-const TokenLiteral = tokens.TokenLiteral;
 const Lexer = lexing.Lexer;
 
 const OpPriority = enum(u8) {
@@ -31,6 +30,7 @@ const OpPriority = enum(u8) {
 fn op_priority(tt: TokenType) OpPriority {
     return switch(tt) {
         .ASSIGN => OpPriority.ASSIGN,
+        .DEFINE => OpPriority.ASSIGN,
         .COMMA => OpPriority.COMMA,
         .OR => OpPriority.OR,
         .AND => OpPriority.AND,
@@ -62,6 +62,7 @@ fn op_priority(tt: TokenType) OpPriority {
 pub const ParseError = error {
     SYNTAX_ERROR,
     TYPE_MISMATCH,
+    INVALID_DEFINE,
     INVALID_PREFIX,
     INVALID_INFIX,
     MALFORMED_NUMBER,
@@ -81,7 +82,7 @@ pub const Parser = struct {
     nodes: *std.ArrayList(ast.Node),
     errors: std.ArrayList(ParseError),
 
-    prev: Token,
+    // prev: Token,
     cur: Token,
     next: Token,
 
@@ -98,7 +99,7 @@ pub const Parser = struct {
             .literals = literals,
             .nodes = nodes,
             .errors = std.ArrayList(ParseError).init(alloc),
-            .prev = invalid_token,
+            // .prev = invalid_token,
             .cur = invalid_token,
             .next = invalid_token,
         };
@@ -115,7 +116,7 @@ pub const Parser = struct {
 
     /// Advances the cursor to the next token.
     fn nextToken(self: *Self) !void {
-        self.prev = self.cur;
+        // self.prev = self.cur;
         self.cur = self.next;
         self.next = try self.lex.nextToken();
     }
@@ -220,7 +221,6 @@ pub const Parser = struct {
             TokenType.HASH => parsePrefixLen,
             TokenType.META => parsePrefixMeta,
             TokenType.COLON => parsePrefixType,
-            TokenType.QUESTION => parseLoopPrefix,
             TokenType.AT => parseGlobal,
             TokenType.LPAREN => parseBlock,
             TokenType.LBRACKET => parseFunctionLiteral,
@@ -255,6 +255,7 @@ pub const Parser = struct {
         return switch (tt) {
             TokenType.COMMA => parseInfixComma,
             TokenType.ASSIGN => parseInfixAssign,
+            TokenType.DEFINE => parseInfixDefine,
             TokenType.OR => parseInfixOr,
             TokenType.AND => parseInfixAnd,
             TokenType.EQ => parseInfixEq,
@@ -271,7 +272,7 @@ pub const Parser = struct {
             TokenType.CARAT => parseInfixPow,
             TokenType.CONCAT => parseInfixConcat,
             TokenType.DOT => parseInfixIndex,
-            TokenType.QUESTION => parseLoopInfix,
+            TokenType.QUESTION => parseInfixLoop,
             TokenType.LPAREN => parseCallExpression,
             else => null
         };
@@ -394,26 +395,6 @@ pub const Parser = struct {
         return node_index;
     }
 
-    fn parseLoopPrefix(self: *Self) !ast.AstIndex {
-        return self.parseLoopInfix(ast.AstIndex.FINAL);
-    }
-
-    fn parseLoopInfix(self: *Self, left: ast.AstIndex) !ast.AstIndex {
-        std.debug.print("left type: {s}\n", .{if (left == .FINAL) "null" else @tagName(self.getNode(left).?.expr)});
-        std.debug.assert(self.cur.tokentype == .QUESTION);
-        if (left != .FINAL and self.getNode(left).?.expr != .Block) return ParseError.INVALID_LOOP_ARGUMENT;
-        const node_index = try self.pushNode(ast.Node{.expr=.{.Loop = .{
-            .body_index = .FINAL,
-            .cond_index = left,
-        }}});
-        try self.nextToken();
-        if (self.cur.tokentype != .LPAREN) return ParseError.MISSING_LOOP_BODY;
-        
-        self.getNode(node_index).?.expr.Loop.body_index = try self.parseBlock();
-
-        return node_index;
-    }
-
     fn parseGlobal(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .AT);
         try self.nextToken();
@@ -436,17 +417,35 @@ pub const Parser = struct {
             return node_index;
         }
 
-        var cur_index = try self.parseStatement();
+        var cur_index = try self.parseExpression(.LOWEST);
+        var ended_with_semicolon: bool = undefined;
+        if (self.cur.tokentype == .SEMICOLON) {
+            try self.nextToken();
+            ended_with_semicolon = true;
+        } else ended_with_semicolon = false;
         self.getNode(node_index).?.expr.Block.start_index = cur_index;
 
         while (self.cur.tokentype != .RPAREN and self.cur.tokentype != .EOF) {
-            const next_index = try self.parseStatement();
-            // getNode must be after parseStatement b/c node creation invalidates node pointers.
+            const next_index = try self.parseExpression(OpPriority.LOWEST);
+            if (self.cur.tokentype == .SEMICOLON) {
+                try self.nextToken();
+                ended_with_semicolon = true;
+            } else ended_with_semicolon = false;
             const cur_stmt = self.getNode(cur_index).?;
             cur_stmt.next_index = next_index;
             cur_index = next_index;
         }
         try self.nextToken();
+
+        if (ended_with_semicolon) {
+            self.getNode(cur_index).?.next_index = try self.pushNode(ast.Node{.expr = .{ .Nil = .{} }});
+        } else if (self.getNode(node_index)) |n| {
+            if (n.expr.Block.start_index == cur_index) {
+                // then the block only contains one node, so just get rid of the block and return the node itself.
+                return cur_index;
+            }
+
+        }
         
         return node_index;
     }
@@ -567,7 +566,9 @@ pub const Parser = struct {
             .Comma=.{ .lhs_index = left, .rhs_index = .FINAL }
         }});
         try self.nextToken();
-        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.COMMA));
+        const rhs_index = try self.parseExpression(
+            (@enumFromInt( @intFromEnum(op_priority(TokenType.COMMA)) - 1))
+        );
         self.getNode(node_index).?.expr.Comma.rhs_index = rhs_index;
         return node_index;
     }
@@ -577,8 +578,23 @@ pub const Parser = struct {
             .Assign=.{ .lhs_index = left, .rhs_index = .FINAL }
         }});
         try self.nextToken();
-        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.ASSIGN));
+        const rhs_index = try self.parseExpression(.LOWEST); // right associative, use lower priority
         self.getNode(node_index).?.expr.Assign.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixDefine(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        switch ((self.getNode(left) orelse return ParseError.INVALID_DEFINE).expr) {
+            .Identifier => {},
+            .Comma => {},
+            else => return ParseError.INVALID_DEFINE
+        }
+        const node_index = try self.pushNode(ast.Node{.expr=.{
+            .Define=.{ .lhs_index = left, .rhs_index = .FINAL }
+        }});
+        try self.nextToken();
+        const rhs_index = try self.parseExpression(.LOWEST); // right associative, use lower priority
+        self.getNode(node_index).?.expr.Define.rhs_index = rhs_index;
         return node_index;
     }
 
@@ -745,6 +761,20 @@ pub const Parser = struct {
         try self.nextToken();
         const rhs_index = try self.parseExpression(comptime op_priority(TokenType.DOT));
         self.getNode(node_index).?.expr.Index.rhs_index = rhs_index;
+        return node_index;
+    }
+
+    fn parseInfixLoop(self: *Self, left: ast.AstIndex) !ast.AstIndex {
+        std.debug.assert(self.cur.tokentype == .QUESTION);
+        if (left == .FINAL) return ParseError.INVALID_LOOP_ARGUMENT;
+        const node_index = try self.pushNode(ast.Node{.expr=.{.Loop = .{
+            .cond_index = left,
+            .body_index = .FINAL,
+        }}});
+        try self.nextToken();
+        // if (self.cur.tokentype != .LPAREN) return ParseError.MISSING_LOOP_BODY;
+        const rhs_index = try self.parseExpression(comptime op_priority(TokenType.QUESTION));
+        self.getNode(node_index).?.expr.Loop.body_index = rhs_index;
         return node_index;
     }
 

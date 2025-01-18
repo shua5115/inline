@@ -14,6 +14,7 @@ pub const TokenType = enum(u8) {
     NUMBER,
     STRING,
     // Operators
+    DEFINE, // :=
     ASSIGN, // =
     DOT, // .
     PLUS, // +
@@ -49,16 +50,13 @@ pub const TokenType = enum(u8) {
     QUESTION, // ?
 };
 
-pub const TokenLiteral = union {
-    none: void,
-    index: usize, // index into strings arraylist
-};
+pub const LiteralIndex = u56;
 
 pub const Token = packed struct {
     const Self = @This();
 
     tokentype: TokenType,
-    literal_index: u56 = 0,
+    literal_index: LiteralIndex = 0,
 
     pub fn has_value(self: Self) bool {
         return switch(self.tokentype) {
@@ -80,44 +78,45 @@ pub fn is_infix_right_associative(tt: TokenType) bool {
 
 pub fn token_type_str(tt: TokenType) []const u8 {
     return switch (tt) {
-        .ILLEGAL => "<ILLEGAL>", // illegal
-        .EOF => "", // emptystr
-        .NIL => "~", // ~
+        .ILLEGAL => "<ILLEGAL>",
+        .EOF => "",
+        .NIL => "~",
         .IDENT => "<IDENT>",
         .STRING => "<STRING>",
         .NUMBER => "<NUMBER>",
-        .ELLIPSIS => "...", // ...
-        .ASSIGN => "=", // =
-        .DOT => ".", // .
-        .PLUS => "+", // +
-        .MINUS => "-", // -
-        .ASTERISK => "*", // *
-        .SLASH => "/", // /
-        .MOD => "%", // %
-        .CARAT => "^", // ^
-        .BREAK => "^^", // ^^
-        .EQ => "==", // ==
-        .NEQ => "!=", // !=
-        .LT => "<", // <
-        .GT => ">", // >
-        .LE => "<=", // <=
-        .GE => ">=", // >=
-        .AND => "&", // &
-        .OR => "|", // |
-        .NOT => "!", // !
-        .HASH => "#", // #
-        .AT => "@", // @
-        .COLON => ":", // :
-        .META => "::", // ::
-        .CONCAT => "..", // ..
-        .SEMICOLON => ";", // ;
-        .COMMA => ",", // ,
-        .LPAREN => "(", // (
-        .RPAREN => ")", // )
-        .LBRACE => "{", // {
-        .RBRACE => "}", // }
-        .LBRACKET => "[", // [
-        .RBRACKET => "]", // ]
-        .QUESTION => "?", // ?
+        .ELLIPSIS => "...",
+        .ASSIGN => "=",
+        .DEFINE => ":=", 
+        .DOT => ".",
+        .PLUS => "+",
+        .MINUS => "-",
+        .ASTERISK => "*",
+        .SLASH => "/",
+        .MOD => "%",
+        .CARAT => "^",
+        .BREAK => "^^",
+        .EQ => "==",
+        .NEQ => "!=",
+        .LT => "<",
+        .GT => ">",
+        .LE => "<=",
+        .GE => ">=",
+        .AND => "&",
+        .OR => "|",
+        .NOT => "!",
+        .HASH => "#",
+        .AT => "@",
+        .COLON => ":",
+        .META => "::",
+        .CONCAT => "..",
+        .SEMICOLON => ";",
+        .COMMA => ",",
+        .LPAREN => "(",
+        .RPAREN => ")",
+        .LBRACE => "{",
+        .RBRACE => "}",
+        .LBRACKET => "[",
+        .RBRACKET => "]",
+        .QUESTION => "?",
     };
 }
