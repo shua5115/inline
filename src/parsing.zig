@@ -77,29 +77,27 @@ pub const Parser = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    lex: *Lexer,
-    literals: *std.ArrayList([]const u8),
-    nodes: *std.ArrayList(ast.Node),
+    lexer: Lexer,
+    nodes: std.ArrayList(ast.Node), // potential optimization: use std.MultiArrayList
+    lines: std.ArrayList(c_int), // map from node index to line number
     errors: std.ArrayList(ParseError),
 
-    // prev: Token,
+    curline: c_int,
     cur: Token,
     next: Token,
 
     pub fn init(
         alloc: std.mem.Allocator,
-        lex: *Lexer,
-        literals: *std.ArrayList([]const u8),
-        nodes: *std.ArrayList(ast.Node)
+        reader: std.io.AnyReader,
     ) !Parser {
         const invalid_token = Token{.tokentype=TokenType.ILLEGAL};
         var p = Parser{
             .allocator = alloc,
-            .lex = lex,
-            .literals = literals,
-            .nodes = nodes,
+            .lexer = Lexer.init(alloc, reader),
+            .nodes = std.ArrayList(ast.Node).init(alloc),
+            .lines = std.ArrayList(c_int).init(alloc),
             .errors = std.ArrayList(ParseError).init(alloc),
-            // .prev = invalid_token,
+            .curline = 0,
             .cur = invalid_token,
             .next = invalid_token,
         };
@@ -112,13 +110,17 @@ pub const Parser = struct {
 
     pub fn deinit(self: *Self) void {
         self.errors.deinit();
+        self.lines.deinit();
+        self.nodes.deinit();
+        self.lexer.deinit();
     }
 
     /// Advances the cursor to the next token.
     fn nextToken(self: *Self) !void {
         // self.prev = self.cur;
         self.cur = self.next;
-        self.next = try self.lex.nextToken();
+        self.curline = self.lexer.curline;
+        self.next = try self.lexer.nextToken();
     }
 
     /// If the next token is of type tt, then the cursor will advance
@@ -133,9 +135,8 @@ pub const Parser = struct {
 
     /// Stores a node, returning its unique index.
     fn pushNode(self: *Self, node: ast.Node) !ast.AstIndex {
-        // try self.nodes.append(node);
-        const ptr = try self.nodes.addOne();
-        ptr.* = node;
+        try self.nodes.append(node);
+        try self.lines.append(self.curline);
         return @enumFromInt(self.nodes.items.len-1);
     }
 
@@ -233,7 +234,16 @@ pub const Parser = struct {
     fn parseBreak(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .BREAK);
         try self.nextToken();
-        return try self.pushNode(ast.Node{.expr = .{ .Break = .{}}});
+        const node_index = try self.pushNode(ast.Node{.expr = .{ .Break = .{
+            .rhs_index = .FINAL
+        }}});
+        
+        const rhs_index = switch(self.next.tokentype) {
+            TokenType.RPAREN, TokenType.SEMICOLON, TokenType.EOF => ast.AstIndex.FINAL,
+            else => try self.parseExpression(OpPriority.LOWEST)
+        };
+        self.getNode(node_index).?.expr.Break.rhs_index = rhs_index;
+        return node_index;
     }
 
     fn parseReturn(self: *Self) !ast.AstIndex {
@@ -326,7 +336,7 @@ pub const Parser = struct {
     fn parseNumberLiteral(self: *Self) !ast.AstIndex {
         std.debug.assert(self.cur.tokentype == .NUMBER);
         const literal_index = self.cur.literal_index;
-        const buf = self.literals.items[literal_index];
+        const buf = self.lexer.literals.items[literal_index];
         const val: luavm.lua_Number = switch(@typeInfo(luavm.lua_Number)) {
             .Float => std.fmt.parseFloat(luavm.lua_Number, buf) catch (
                 @as(luavm.lua_Number, @floatFromInt(std.fmt.parseInt(i64, buf, 0) catch {

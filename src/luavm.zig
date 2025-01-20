@@ -7,7 +7,8 @@ pub const lua_Number = f64;
 
 pub const luac_Version: u8 = 0x51;
 pub const luac_Format: u8 = 0;
-pub const luac_IsLittleEndian: u8 = @intFromBool(@import("builtin").target.cpu.arch.endian() == .little);
+pub const endianness = @import("builtin").target.cpu.arch.endian();
+pub const luac_IsLittleEndian: u8 = @intFromBool(endianness == .little);
 pub const luac_NumberIsInteger: u8 = @intFromBool(@typeInfo(lua_Number) == .Int);
 
 pub const LUAC_HEADER = std.fmt.comptimePrint(

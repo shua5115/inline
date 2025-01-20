@@ -26,22 +26,24 @@ pub const Lexer = struct {
     allocator: std.mem.Allocator,
     /// A store of all literal values read from the source.
     /// All stored slices must be free'd using the Lexer's allocator, not the ArrayList's.
-    literals: *std.ArrayList([]const u8),
+    literals: std.ArrayList([]const u8),
     literal_set: std.StringHashMap(LiteralIndex),
+    literal_buf: std.ArrayList(u8),
     input: std.io.AnyReader,
+    curline: c_int,
     cur: ?u8,
     next: ?u8,
-    literal_buf: std.ArrayList(u8),
 
-    pub fn init(allocator: std.mem.Allocator, literals: *std.ArrayList([]const u8), reader: std.io.AnyReader) Lexer {
+    pub fn init(allocator: std.mem.Allocator, reader: std.io.AnyReader) Lexer {
         var lexer = Lexer{
             .allocator = allocator,
-            .literals = literals,
+            .literals = std.ArrayList([]const u8).init(allocator),
             .literal_set = std.StringHashMap(LiteralIndex).init(allocator),
+            .literal_buf = std.ArrayList(u8).init(allocator),
             .input = reader,
+            .curline = 0,
             .cur = undefined,
             .next = undefined,
-            .literal_buf = std.ArrayList(u8).init(allocator),
         };
 
         lexer.cur = (reader.readByte() catch null);
@@ -51,6 +53,10 @@ pub const Lexer = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        for (self.literals.items) |value| {
+            self.allocator.free(value);
+        }
+        self.literals.deinit();
         self.literal_buf.deinit();
         self.literal_set.deinit();
     }
@@ -59,6 +65,7 @@ pub const Lexer = struct {
     /// Stores next into cur, and read input into next.
     fn readNextChar(self: *Self) void {
         self.cur = self.next;
+        if (self.cur == '\n') self.curline += 1;
         // if (self.next == null) return;
         self.next = self.input.readByte() catch null;
     }
@@ -153,11 +160,10 @@ pub const Lexer = struct {
             ']' => tok = .{.tokentype=TokenType.RBRACKET},
             '"' => return .{.tokentype=TokenType.STRING, .literal_index=try readStringLiteral(self)},
             '\'' => return .{.tokentype=TokenType.STRING, .literal_index=try readStringLiteral(self)},
-            else => if (!isDigit(c) and isIdentChar(c)) {
-                return .{.tokentype=TokenType.IDENT, .literal_index=try readIdentifier(self)};
-            } else if (isDigit(c)) {
-                // does not end on last character, so return early
+            else => if (isDigit(c)) {
                 return .{.tokentype=TokenType.NUMBER, .literal_index=try readNumber(self)};
+            } else if (isIdentChar(c)) {
+                return .{.tokentype=TokenType.IDENT, .literal_index=try readIdentifier(self)};
             }
         }
         self.readNextChar();
@@ -419,11 +425,9 @@ test "parse tokens" {
     const alloc = std.testing.allocator;
     var literals = std.ArrayList([]const u8).init(alloc);
     defer literals.deinit();
-    var input = std.fifo.LinearFifo(u8, .Dynamic).init(alloc);
-    defer input.deinit();
-    try input.write(source);
+    var input = @import("stringreader.zig").StringReader.init(source);
     
-    var lexer = Lexer.init(alloc, &literals, input.reader().any());
+    var lexer = Lexer.init(alloc, input.reader().any());
     defer lexer.deinit();
     
     for (expected_tokens) |expected| {
@@ -436,16 +440,12 @@ test "parse tokens" {
             "Type mismatch: {s} != {s}\n", .{@tagName(expected.tt), @tagName(token.tokentype)});
 
         if (token.has_value()) {
-            assert_errmsg(std.mem.eql(u8, expected.lit, literals.items[token.literal_index]),
-                "Value mismatch: {s} != {s}\n", .{expected.lit, literals.items[token.literal_index]});
+            assert_errmsg(std.mem.eql(u8, expected.lit, lexer.literals.items[token.literal_index]),
+                "Value mismatch: {s} != {s}\n", .{expected.lit, lexer.literals.items[token.literal_index]});
         } else {
             
             assert_errmsg(std.mem.eql(u8, expected.lit, tokens.token_type_str(token.tokentype)),
                 "Value mismatch: {s} != {s}\n", .{expected.lit, tokens.token_type_str(token.tokentype)});
         }
-    }
-
-    for (literals.items) |value| {
-        alloc.free(value);
     }
 }

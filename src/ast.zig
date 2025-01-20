@@ -195,7 +195,9 @@ pub const Block = struct {
     start_index: AstIndex,
 };
 
-pub const Break = struct {};
+pub const Break = struct {
+    rhs_index: AstIndex,
+};
 
 pub const Return = struct {
     rhs_index: AstIndex,
